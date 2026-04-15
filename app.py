@@ -14,9 +14,11 @@ import streamlit as st
 import pandas as pd
 import json
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from supabase import create_client as supabase_client
+import plotly.figure_factory as ff
+import plotly.graph_objects as go
 
 # ─── Config ───
 st.set_page_config(
@@ -172,11 +174,17 @@ def load_template(csv_source=None):
             raw = row.get("default_assignee", "")
             default_assignee = str(raw).strip() if pd.notna(raw) else ""
 
+        # Get date offsets if present (days before go-live)
+        start_offset = row.get("start_offset_days", "")
+        end_offset = row.get("end_offset_days", "")
+
         template[cat].append({
             "item": str(row["item"]).strip(),
             "points": float(row.get("points", 1)),
             "default_assignee": default_assignee,
             "default_role": default_role,
+            "start_offset_days": int(start_offset) if pd.notna(start_offset) and start_offset != "" else None,
+            "end_offset_days": int(end_offset) if pd.notna(end_offset) and end_offset != "" else None,
         })
     return template
 
@@ -200,6 +208,25 @@ def create_client(name, tier, go_live_date, account_manager, tech_lead, template
                 if role_person:
                     assignee = role_person
 
+            # Calculate dates from offsets if go_live_date is provided
+            start_date_str = ""
+            end_date_str = ""
+            if go_live_date and it.get("start_offset_days") is not None and it.get("end_offset_days") is not None:
+                # Convert go_live_date to date object if it's not already
+                if isinstance(go_live_date, str):
+                    try:
+                        go_live_dt = date.fromisoformat(go_live_date)
+                    except (ValueError, TypeError):
+                        go_live_dt = go_live_date
+                else:
+                    go_live_dt = go_live_date
+
+                # Calculate actual dates by subtracting offsets from go-live date
+                start_dt = go_live_dt - timedelta(days=it["start_offset_days"])
+                end_dt = go_live_dt - timedelta(days=it["end_offset_days"])
+                start_date_str = str(start_dt)
+                end_date_str = str(end_dt)
+
             checklist[cat].append({
                 "id": str(uuid.uuid4())[:8],
                 "item": it["item"],
@@ -207,7 +234,8 @@ def create_client(name, tier, go_live_date, account_manager, tech_lead, template
                 "status": "Not started",
                 "assignee": assignee,
                 "notes": "",
-                "due_date": "",
+                "start_date": start_date_str,
+                "end_date": end_date_str,
             })
 
     return {
@@ -233,10 +261,28 @@ def save_client(client):
     }).execute()
 
 
+def migrate_client_dates(client):
+    """Migrate old due_date field to start_date/end_date if needed."""
+    for cat, items in client.get("checklist", {}).items():
+        for it in items:
+            # If old due_date exists but new fields don't
+            if "due_date" in it and ("start_date" not in it or "end_date" not in it):
+                due = it.get("due_date", "")
+                # Migrate: due_date becomes end_date, leave start_date empty
+                it["start_date"] = ""
+                it["end_date"] = due if due else ""
+                # Remove old field
+                if "due_date" in it:
+                    del it["due_date"]
+    return client
+
+
 def load_all_clients():
     """Load all clients from Supabase."""
     res = supabase.table("clients").select("data").order("created_at", desc=True).execute()
-    return [row["data"] for row in res.data]
+    clients = [row["data"] for row in res.data]
+    # Migrate old date format
+    return [migrate_client_dates(c) for c in clients]
 
 
 def delete_client(client_id):
@@ -369,6 +415,298 @@ def get_all_assignees(client):
         for m in role_members:
             names.add(m)
     return sorted(names)
+
+
+def create_timeline_chart(client, selected_categories=None):
+    """Create a roadmap-style timeline with card views grouped by category.
+
+    Args:
+        client: Client data dictionary
+        selected_categories: List of category names to display (None = all categories)
+    """
+    tasks_data = []
+
+    # Define category colors
+    category_colors = {
+        "Master Data": "#FF6B6B",
+        "Master Data Setup": "#4ECDC4",
+        "Dashboard Setup": "#45B7D1",
+        "Transaction Migration": "#FFA07A",
+        "External Emails": "#98D8C8",
+        "Internal Emails": "#6C5CE7",
+        "Views": "#A8E6CF",
+        "Permissions & Access": "#FFD93D",
+        "Integrations": "#6BCF7F",
+        "Documents": "#95A5A6",
+        "Notifications (Knock)": "#F4A460",
+    }
+
+    # Category icons
+    category_icons = {
+        "Master Data": "◈",
+        "Master Data Setup": "⚙️",
+        "Dashboard Setup": "📊",
+        "Transaction Migration": "🔄",
+        "External Emails": "✉️",
+        "Internal Emails": "📨",
+        "Views": "👁️",
+        "Permissions & Access": "🔐",
+        "Integrations": "🔗",
+        "Documents": "📄",
+        "Notifications (Knock)": "🔔",
+    }
+
+    # Define category order (for y-axis grouping)
+    category_order = [
+        "Master Data",
+        "Master Data Setup",
+        "Dashboard Setup",
+        "Transaction Migration",
+        "External Emails",
+        "Internal Emails",
+        "Views",
+        "Permissions & Access",
+        "Integrations",
+        "Documents",
+        "Notifications (Knock)",
+    ]
+
+    for cat, items in client.get("checklist", {}).items():
+        # Filter by selected categories
+        if selected_categories and cat not in selected_categories:
+            continue
+
+        for it in items:
+            start = it.get("start_date", "")
+            end = it.get("end_date", "")
+
+            # Skip tasks without date range
+            if not start or not end:
+                continue
+
+            try:
+                start_dt = datetime.fromisoformat(start).date()
+                end_dt = datetime.fromisoformat(end).date()
+
+                # Ensure end is after start
+                if end_dt < start_dt:
+                    end_dt = start_dt
+
+                tasks_data.append({
+                    "Task": it["item"],
+                    "Start": start_dt,
+                    "Finish": end_dt,
+                    "Category": cat,
+                    "Status": it["status"],
+                    "Assignee": it.get("assignee", "Unassigned"),
+                    "Points": it["points"],
+                    "Icon": category_icons.get(cat, "📋"),
+                })
+            except (ValueError, TypeError):
+                continue
+
+    if not tasks_data:
+        return None
+
+    df = pd.DataFrame(tasks_data)
+
+    # Sort by category order, then by start date within each category
+    df["CategoryOrder"] = df["Category"].map(lambda x: category_order.index(x) if x in category_order else 999)
+    df = df.sort_values(["CategoryOrder", "Start"])
+
+    # Create figure
+    fig = go.Figure()
+
+    # Group tasks by category and assign y-positions
+    # Each category gets its own vertical section
+    y_position = 0
+    y_tick_vals = []
+    y_tick_labels = []
+    category_y_ranges = {}  # Track y-range for each category for separator lines
+
+    current_category = None
+    card_height = 0.7
+    vertical_gap = 0.3  # Gap between tasks within same category
+    category_gap = 1.5  # Gap between different categories
+
+    # Assign y-positions grouped by category
+    for idx, row in df.iterrows():
+        # Check if we're starting a new category
+        if row["Category"] != current_category:
+            if current_category is not None:
+                # Add gap before new category
+                y_position += category_gap
+
+            current_category = row["Category"]
+            category_start_y = y_position
+
+            # Add category label
+            y_tick_vals.append(y_position + card_height / 2)
+            y_tick_labels.append(f"{category_icons.get(current_category, '📋')} {current_category}")
+
+        # Assign this task's y-position
+        df.at[idx, "YPosition"] = y_position
+
+        # Track category range
+        if current_category not in category_y_ranges:
+            category_y_ranges[current_category] = {"min": y_position, "max": y_position + card_height}
+        else:
+            category_y_ranges[current_category]["max"] = y_position + card_height
+
+        # Move to next position
+        y_position += card_height + vertical_gap
+
+    # Draw category separator lines and background rectangles
+    for cat, y_range in category_y_ranges.items():
+        # Add semi-transparent background for category
+        fig.add_shape(
+            type="rect",
+            x0=df["Start"].min(),
+            x1=df["Finish"].max(),
+            y0=y_range["min"] - vertical_gap,
+            y1=y_range["max"] + vertical_gap / 2,
+            fillcolor=category_colors.get(cat, "#95A5A6"),
+            opacity=0.05,
+            line=dict(width=0),
+            layer="below",
+        )
+
+    # Draw task cards
+    for idx, row in df.iterrows():
+        status_marker = STATUS_COLORS.get(row["Status"], "⚪")
+        duration_days = (row["Finish"] - row["Start"]).days + 1
+
+        # Task card text (truncated)
+        task_short = row['Task'][:40] + "..." if len(row['Task']) > 40 else row['Task']
+
+        hover_text = (
+            f"<b>{row['Icon']} {row['Task']}</b><br>"
+            f"<b>Category:</b> {row['Category']}<br>"
+            f"<b>Status:</b> {status_marker} {row['Status']}<br>"
+            f"<b>Assignee:</b> {row['Assignee']}<br>"
+            f"<b>Points:</b> {row['Points']}<br>"
+            f"<b>Duration:</b> {duration_days} days<br>"
+            f"<b>Start:</b> {row['Start'].strftime('%b %d, %Y')}<br>"
+            f"<b>End:</b> {row['Finish'].strftime('%b %d, %Y')}"
+        )
+
+        # Card position
+        y_pos = row["YPosition"]
+        y_bottom = y_pos
+        y_top = y_pos + card_height
+
+        # Add card as a rectangle
+        fig.add_shape(
+            type="rect",
+            x0=row["Start"],
+            x1=row["Finish"],
+            y0=y_bottom,
+            y1=y_top,
+            fillcolor=category_colors.get(row["Category"], "#95A5A6"),
+            line=dict(color='rgba(255,255,255,0.6)', width=2),
+            layer="below",
+        )
+
+        # Add card label (icon + truncated task name)
+        mid_date = row["Start"] + (row["Finish"] - row["Start"]) / 2
+        mid_y = y_bottom + card_height / 2
+
+        fig.add_annotation(
+            x=mid_date,
+            y=mid_y,
+            text=f"{status_marker} {task_short}",
+            showarrow=False,
+            font=dict(size=10, color='#ffffff'),
+            bgcolor='rgba(0,0,0,0.3)',
+            borderpad=4,
+        )
+
+        # Add invisible scatter point for hover
+        fig.add_trace(go.Scatter(
+            x=[mid_date],
+            y=[mid_y],
+            mode='markers',
+            marker=dict(size=0.1, color='rgba(0,0,0,0)'),
+            hovertemplate=hover_text + "<extra></extra>",
+            showlegend=False,
+        ))
+
+    # Add today's date marker
+    today = date.today()
+    max_y = y_position
+    fig.add_shape(
+        type="line",
+        x0=today,
+        x1=today,
+        y0=-0.5,
+        y1=max_y,
+        line=dict(color="cyan", width=2, dash="dash"),
+    )
+    fig.add_annotation(
+        x=today,
+        y=max_y,
+        text="Today",
+        showarrow=False,
+        yanchor="bottom",
+        font=dict(color="cyan", size=12, weight="bold"),
+    )
+
+    # Add go-live date marker if set
+    if client.get("go_live_date"):
+        try:
+            go_live_dt = date.fromisoformat(client["go_live_date"])
+            fig.add_shape(
+                type="line",
+                x0=go_live_dt,
+                x1=go_live_dt,
+                y0=-0.5,
+                y1=max_y,
+                line=dict(color="#e8d44d", width=3, dash="solid"),
+            )
+            fig.add_annotation(
+                x=go_live_dt,
+                y=max_y,
+                text="Go-Live",
+                showarrow=False,
+                yanchor="bottom",
+                font=dict(color="#e8d44d", size=12, weight="bold"),
+            )
+        except (ValueError, TypeError):
+            pass
+
+    # Update layout
+    fig.update_layout(
+        title={
+            'text': "Go-Live Timeline Roadmap",
+            'x': 0.5,
+            'xanchor': 'center',
+            'font': {'size': 20, 'color': '#ffffff'}
+        },
+        xaxis=dict(
+            title="Timeline",
+            type='date',
+            gridcolor='rgba(255,255,255,0.1)',
+            showgrid=True,
+        ),
+        yaxis=dict(
+            title="Categories",
+            showticklabels=True,
+            tickvals=y_tick_vals,
+            ticktext=y_tick_labels,
+            range=[-1, max_y + 1],
+            gridcolor='rgba(255,255,255,0.05)',
+            showgrid=True,
+        ),
+        height=max(600, int(max_y * 50) + 150),
+        plot_bgcolor='rgba(10,10,10,1)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#ffffff', size=11),
+        hovermode='closest',
+        showlegend=False,  # Hide legend since we show categories on y-axis
+        margin=dict(l=250, r=60, t=80, b=60),
+    )
+
+    return fig
 
 
 # ─── Initialize Session State ───
@@ -660,7 +998,8 @@ with col_actions:
                     "points": it["points"],
                     "status": it["status"],
                     "assignee": it.get("assignee", ""),
-                    "due_date": it.get("due_date", ""),
+                    "start_date": it.get("start_date", ""),
+                    "end_date": it.get("end_date", ""),
                     "notes": it.get("notes", ""),
                 })
         export_df = pd.DataFrame(export_rows)
@@ -758,178 +1097,301 @@ st.progress(stats["pct"] / 100)
 st.divider()
 
 
-# ── Category Filter ──
-filter_col1, filter_col2 = st.columns([3, 1])
-with filter_col2:
-    status_filter = st.selectbox(
-        "Filter by status",
-        ["All"] + STATUSES,
-        key="status_filter",
-    )
+# ── View Tabs ──
+tab_checklist, tab_timeline = st.tabs(["📋 Checklist", "📅 Timeline"])
 
-
-# ── Checklist by Category ──
-CATEGORY_ICONS = {
-    "Master Data": "◈",
-    "Master Data Setup": "⚙️",
-    "Dashboard Setup": "📊",
-    "Transaction Migration": "🔄",
-    "External Emails": "✉️",
-    "Internal Emails": "📨",
-    "Views": "👁️",
-    "Permissions & Access": "🔐",
-    "Integrations": "🔗",
-    "Documents": "📄",
-    "Notifications (Knock)": "🔔",
-}
-
-# Collect all assignee options for SelectboxColumn
-all_assignees = get_all_assignees(active)
-
-data_changed = False
-
-for cat, items in active["checklist"].items():
-    # Filter items
-    if status_filter != "All":
-        filtered = [i for i in items if i["status"] == status_filter]
-        if not filtered:
-            continue
-    else:
-        filtered = items
-
-    # Category stats
-    cat_stats = stats["by_category"].get(cat, {})
-    icon = CATEGORY_ICONS.get(cat, "📋")
-    pct = cat_stats.get("pct", 0)
-    done = cat_stats.get("done", 0)
-    total = cat_stats.get("total", 0)
-
-    pct_color = "🟢" if pct == 100 else "🟡" if pct > 50 else "🔴"
-
-    with st.expander(f"{icon} **{cat}** — {pct_color} {done}/{total} ({pct}%)", expanded=(pct < 100)):
-
-        # Build dataframe for editing
-        df_data = []
-        for it in filtered:
-            # Parse due_date
-            raw_due = it.get("due_date", "")
-            try:
-                due_val = date.fromisoformat(raw_due) if raw_due else None
-            except (ValueError, TypeError):
-                due_val = None
-
-            df_data.append({
-                "✓": it["status"] in ("Approved", "N/A"),
-                "Item": it["item"],
-                "Status": it["status"],
-                "Assignee": it.get("assignee", ""),
-                "Due Date": due_val,
-                "Points": it["points"],
-                "Notes": it.get("notes", ""),
-                "_id": it["id"],
-            })
-
-        df = pd.DataFrame(df_data)
-
-        edited_df = st.data_editor(
-            df.drop(columns=["_id"]),
-            key=f"editor_{cat}_{active['id']}",
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "✓": st.column_config.CheckboxColumn("✓", width="small"),
-                "Item": st.column_config.TextColumn("Item", width="large"),
-                "Status": st.column_config.SelectboxColumn(
-                    "Status", options=STATUSES, width="medium",
-                ),
-                "Assignee": st.column_config.SelectboxColumn(
-                    "Assignee", options=all_assignees, width="medium",
-                ),
-                "Due Date": st.column_config.DateColumn("Due", format="YYYY-MM-DD", width="small"),
-                "Points": st.column_config.NumberColumn("Pts", width="small", format="%.1f"),
-                "Notes": st.column_config.TextColumn("Notes", width="large"),
-            },
-            num_rows="dynamic",  # Allows adding/deleting rows
+with tab_checklist:
+    # ── Category Filter ──
+    filter_col1, filter_col2 = st.columns([3, 1])
+    with filter_col2:
+        status_filter = st.selectbox(
+            "Filter by status",
+            ["All"] + STATUSES,
+            key="status_filter",
         )
 
-        # Sync edits back (use string comparison to avoid dtype mismatch false positives)
-        original_df = df.drop(columns=["_id"]).reset_index(drop=True)
-        edited_compare = edited_df.reset_index(drop=True)
-        has_changes = (
-            len(edited_compare) != len(original_df)
-            or not edited_compare.astype(str).equals(original_df.astype(str))
-        )
-        if has_changes:
-            new_items = []
-            for idx, row in edited_df.iterrows():
-                if idx < len(filtered):
-                    # Existing item
-                    it = filtered[idx].copy()
-                    it["item"] = row["Item"]
-                    it["points"] = row["Points"]
-                    it["assignee"] = row["Assignee"] if pd.notna(row["Assignee"]) else ""
-                    it["notes"] = row["Notes"] if pd.notna(row["Notes"]) else ""
-                    # Sync due_date
-                    due_val = row.get("Due Date")
-                    it["due_date"] = str(due_val) if pd.notna(due_val) and due_val is not None else ""
-                    # Checkbox overrides status
-                    if row["✓"] and it["status"] not in ("Approved", "N/A"):
-                        it["status"] = "Approved"
-                    elif not row["✓"] and it["status"] in ("Approved", "N/A"):
-                        it["status"] = "Not started"
-                    else:
-                        it["status"] = row["Status"]
-                    new_items.append(it)
-                else:
-                    # New row added
-                    due_val = row.get("Due Date")
-                    new_items.append({
-                        "id": str(uuid.uuid4())[:8],
-                        "item": row["Item"] if pd.notna(row["Item"]) else "New item",
-                        "points": row["Points"] if pd.notna(row["Points"]) else 1,
-                        "status": row["Status"] if pd.notna(row["Status"]) else "Not started",
-                        "assignee": row["Assignee"] if pd.notna(row["Assignee"]) else "",
-                        "due_date": str(due_val) if pd.notna(due_val) and due_val is not None else "",
-                        "notes": row["Notes"] if pd.notna(row["Notes"]) else "",
-                    })
 
-            # Merge edits back into the full item list
-            if status_filter == "All":
-                active["checklist"][cat] = new_items
+    # ── Checklist by Category ──
+    CATEGORY_ICONS = {
+        "Master Data": "◈",
+        "Master Data Setup": "⚙️",
+        "Dashboard Setup": "📊",
+        "Transaction Migration": "🔄",
+        "External Emails": "✉️",
+        "Internal Emails": "📨",
+        "Views": "👁️",
+        "Permissions & Access": "🔐",
+        "Integrations": "🔗",
+        "Documents": "📄",
+        "Notifications (Knock)": "🔔",
+    }
+
+    # Collect all assignee options for SelectboxColumn
+    all_assignees = get_all_assignees(active)
+
+    data_changed = False
+
+    for cat, items in active["checklist"].items():
+        # Filter items
+        if status_filter != "All":
+            filtered = [i for i in items if i["status"] == status_filter]
+            if not filtered:
+                continue
+        else:
+            filtered = items
+
+        # Category stats
+        cat_stats = stats["by_category"].get(cat, {})
+        icon = CATEGORY_ICONS.get(cat, "📋")
+        pct = cat_stats.get("pct", 0)
+        done = cat_stats.get("done", 0)
+        total = cat_stats.get("total", 0)
+
+        pct_color = "🟢" if pct == 100 else "🟡" if pct > 50 else "🔴"
+
+        with st.expander(f"{icon} **{cat}** — {pct_color} {done}/{total} ({pct}%)", expanded=(pct < 100)):
+
+            # Build dataframe for editing
+            df_data = []
+            for it in filtered:
+                # Parse start_date and end_date
+                raw_start = it.get("start_date", "")
+                raw_end = it.get("end_date", "")
+                try:
+                    start_val = date.fromisoformat(raw_start) if raw_start else None
+                except (ValueError, TypeError):
+                    start_val = None
+                try:
+                    end_val = date.fromisoformat(raw_end) if raw_end else None
+                except (ValueError, TypeError):
+                    end_val = None
+
+                df_data.append({
+                    "✓": it["status"] in ("Approved", "N/A"),
+                    "Item": it["item"],
+                    "Status": it["status"],
+                    "Assignee": it.get("assignee", ""),
+                    "Start Date": start_val,
+                    "End Date": end_val,
+                    "Points": it["points"],
+                    "Notes": it.get("notes", ""),
+                    "_id": it["id"],
+                })
+
+            df = pd.DataFrame(df_data)
+
+            edited_df = st.data_editor(
+                df.drop(columns=["_id"]),
+                key=f"editor_{cat}_{active['id']}",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "✓": st.column_config.CheckboxColumn("✓", width="small"),
+                    "Item": st.column_config.TextColumn("Item", width="large"),
+                    "Status": st.column_config.SelectboxColumn(
+                        "Status", options=STATUSES, width="medium",
+                    ),
+                    "Assignee": st.column_config.SelectboxColumn(
+                        "Assignee", options=all_assignees, width="medium",
+                    ),
+                    "Start Date": st.column_config.DateColumn("Start", format="YYYY-MM-DD", width="small"),
+                    "End Date": st.column_config.DateColumn("End", format="YYYY-MM-DD", width="small"),
+                    "Points": st.column_config.NumberColumn("Pts", width="small", format="%.1f"),
+                    "Notes": st.column_config.TextColumn("Notes", width="large"),
+                },
+                num_rows="dynamic",  # Allows adding/deleting rows
+            )
+
+            # Check if data actually changed by comparing with original filtered items
+            has_changes = False
+
+            # Quick checks first
+            if len(edited_df) != len(filtered):
+                has_changes = True
             else:
-                # Order-preserving merge: replace edited, skip deleted, keep others
-                edited_by_id = {}
-                for idx, it in enumerate(new_items):
+                # Compare each row with original data
+                for idx, row in edited_df.iterrows():
+                    if idx >= len(filtered):
+                        has_changes = True
+                        break
+
+                    original = filtered[idx]
+
+                    # Helper to normalize dates for comparison
+                    def date_to_str(val):
+                        if pd.isna(val) or val is None:
+                            return ""
+                        if isinstance(val, str):
+                            return val
+                        if hasattr(val, 'isoformat'):
+                            return val.isoformat()
+                        return str(val)
+
+                    # Compare each field
+                    if (original["item"] != str(row["Item"]) or
+                        original["points"] != float(row["Points"]) or
+                        original.get("assignee", "") != str(row["Assignee"] if pd.notna(row["Assignee"]) else "") or
+                        original.get("notes", "") != str(row["Notes"] if pd.notna(row["Notes"]) else "") or
+                        original["status"] != str(row["Status"]) or
+                        original.get("start_date", "") != date_to_str(row.get("Start Date")) or
+                        original.get("end_date", "") != date_to_str(row.get("End Date"))):
+                        has_changes = True
+                        break
+
+            if has_changes:
+                new_items = []
+                for idx, row in edited_df.iterrows():
                     if idx < len(filtered):
-                        edited_by_id[filtered[idx]["id"]] = it
-
-                # IDs that were in filtered view but removed by user
-                deleted_ids = set()
-                for idx in range(len(filtered)):
-                    if idx >= len(edited_df):
-                        deleted_ids.add(filtered[idx]["id"])
-
-                # Truly new rows (added beyond original filtered set)
-                truly_new = new_items[len(filtered):]
-
-                # Rebuild in original order
-                rebuilt = []
-                for it in items:
-                    if it["id"] in deleted_ids:
-                        continue
-                    elif it["id"] in edited_by_id:
-                        rebuilt.append(edited_by_id[it["id"]])
+                        # Existing item
+                        it = filtered[idx].copy()
+                        it["item"] = row["Item"]
+                        it["points"] = row["Points"]
+                        it["assignee"] = row["Assignee"] if pd.notna(row["Assignee"]) else ""
+                        it["notes"] = row["Notes"] if pd.notna(row["Notes"]) else ""
+                        # Sync start_date and end_date
+                        start_val = row.get("Start Date")
+                        end_val = row.get("End Date")
+                        it["start_date"] = str(start_val) if pd.notna(start_val) and start_val is not None else ""
+                        it["end_date"] = str(end_val) if pd.notna(end_val) and end_val is not None else ""
+                        # Checkbox overrides status
+                        if row["✓"] and it["status"] not in ("Approved", "N/A"):
+                            it["status"] = "Approved"
+                        elif not row["✓"] and it["status"] in ("Approved", "N/A"):
+                            it["status"] = "Not started"
+                        else:
+                            it["status"] = row["Status"]
+                        new_items.append(it)
                     else:
-                        rebuilt.append(it)
-                rebuilt.extend(truly_new)
-                active["checklist"][cat] = rebuilt
+                        # New row added
+                        start_val = row.get("Start Date")
+                        end_val = row.get("End Date")
+                        new_items.append({
+                            "id": str(uuid.uuid4())[:8],
+                            "item": row["Item"] if pd.notna(row["Item"]) else "New item",
+                            "points": row["Points"] if pd.notna(row["Points"]) else 1,
+                            "status": row["Status"] if pd.notna(row["Status"]) else "Not started",
+                            "assignee": row["Assignee"] if pd.notna(row["Assignee"]) else "",
+                            "start_date": str(start_val) if pd.notna(start_val) and start_val is not None else "",
+                            "end_date": str(end_val) if pd.notna(end_val) and end_val is not None else "",
+                            "notes": row["Notes"] if pd.notna(row["Notes"]) else "",
+                        })
 
-            data_changed = True
+                # Merge edits back into the full item list
+                if status_filter == "All":
+                    active["checklist"][cat] = new_items
+                else:
+                    # Order-preserving merge: replace edited, skip deleted, keep others
+                    edited_by_id = {}
+                    for idx, it in enumerate(new_items):
+                        if idx < len(filtered):
+                            edited_by_id[filtered[idx]["id"]] = it
 
-# Auto-save on any change
-if data_changed:
-    save_client(active)
-    refresh_clients()
+                    # IDs that were in filtered view but removed by user
+                    deleted_ids = set()
+                    for idx in range(len(filtered)):
+                        if idx >= len(edited_df):
+                            deleted_ids.add(filtered[idx]["id"])
+
+                    # Truly new rows (added beyond original filtered set)
+                    truly_new = new_items[len(filtered):]
+
+                    # Rebuild in original order
+                    rebuilt = []
+                    for it in items:
+                        if it["id"] in deleted_ids:
+                            continue
+                        elif it["id"] in edited_by_id:
+                            rebuilt.append(edited_by_id[it["id"]])
+                        else:
+                            rebuilt.append(it)
+                    rebuilt.extend(truly_new)
+                    active["checklist"][cat] = rebuilt
+
+                data_changed = True
+
+    # Auto-save on any change
+    if data_changed:
+        save_client(active)
+        refresh_clients()
+
+with tab_timeline:
+    st.markdown("### 📅 Go-Live Timeline")
+    st.caption("Visual timeline of all tasks grouped by category with date ranges")
+
+    # Get all available categories from checklist
+    all_categories = list(active.get("checklist", {}).keys())
+
+    # Category filter
+    if all_categories:
+        col_filter1, col_filter2 = st.columns([3, 1])
+        with col_filter1:
+            selected_categories = st.multiselect(
+                "Filter by categories",
+                options=all_categories,
+                default=all_categories,
+                help="Select which categories to display on the timeline"
+            )
+        with col_filter2:
+            st.write("")  # Spacer
+            if st.button("Select All", use_container_width=True):
+                st.rerun()
+
+        # Create and display timeline chart with filtered categories
+        timeline_fig = create_timeline_chart(active, selected_categories=selected_categories if selected_categories else None)
+    else:
+        # No categories available, show timeline without filter
+        timeline_fig = create_timeline_chart(active)
+
+    if timeline_fig is None:
+        st.info("⏳ No tasks with date ranges yet. Add start and end dates to tasks in the Checklist tab to see them here.")
+    else:
+        st.plotly_chart(timeline_fig, use_container_width=True)
+
+        # Timeline stats
+        st.divider()
+        col_t1, col_t2, col_t3 = st.columns(3)
+
+        # Calculate timeline stats
+        tasks_with_dates = 0
+        earliest_start = None
+        latest_end = None
+
+        for cat, items in active["checklist"].items():
+            for it in items:
+                start = it.get("start_date", "")
+                end = it.get("end_date", "")
+                if start and end:
+                    tasks_with_dates += 1
+                    try:
+                        start_dt = datetime.fromisoformat(start).date()
+                        end_dt = datetime.fromisoformat(end).date()
+
+                        if earliest_start is None or start_dt < earliest_start:
+                            earliest_start = start_dt
+                        if latest_end is None or end_dt > latest_end:
+                            latest_end = end_dt
+                    except (ValueError, TypeError):
+                        continue
+
+        with col_t1:
+            st.metric("Tasks with Dates", f"{tasks_with_dates}/{stats['total']}")
+        with col_t2:
+            if earliest_start:
+                st.metric("Timeline Start", earliest_start.strftime("%b %d, %Y"))
+            else:
+                st.metric("Timeline Start", "N/A")
+        with col_t3:
+            if latest_end:
+                st.metric("Timeline End", latest_end.strftime("%b %d, %Y"))
+                if active.get("go_live_date"):
+                    try:
+                        go_live_dt = date.fromisoformat(active["go_live_date"])
+                        if latest_end > go_live_dt:
+                            st.warning(f"⚠️ Timeline extends {(latest_end - go_live_dt).days} days beyond go-live date")
+                    except ValueError:
+                        pass
+            else:
+                st.metric("Timeline End", "N/A")
 
 
 # ── Footer ──
