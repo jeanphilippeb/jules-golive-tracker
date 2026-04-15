@@ -17,7 +17,6 @@ import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from supabase import create_client as supabase_client
-import plotly.figure_factory as ff
 import plotly.graph_objects as go
 
 # ─── Config ───
