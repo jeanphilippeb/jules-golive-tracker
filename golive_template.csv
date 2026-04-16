@@ -76,3 +76,20 @@ Documents,Invoice,1.0,,,,,28,10
 Documents,Payables,1.0,,,,,28,10
 Notifications (Knock),Internal,1.0,,,,,14,7
 Notifications (Knock),External,1.0,,,,,14,7
+Features,Feature requirements gathered,2,x,,,,56,42
+Features,Feature scope confirmed,2,,x,,,56,42
+Features,Feature development complete,5,,x,,,42,28
+Features,Feature demo with customer,2,x,,,,28,21
+SOPs,SOP templates drafted,2,x,,,,28,21
+SOPs,SOPs reviewed by customer,2,x,,,,21,14
+SOPs,SOPs published to knowledge base,1,x,,,,14,7
+UATs,UAT plan created,2,x,,,,21,14
+UATs,UAT environment prepared,3,,,x,,21,14
+UATs,UAT session 1 conducted,3,x,,,,14,7
+UATs,UAT defects resolved,3,,x,,,14,7
+UATs,UAT sign-off received,2,x,,,,7,0
+Trainings,Training plan defined,1,x,,,,14,7
+Trainings,Training materials prepared,2,x,,,,14,7
+Trainings,Admin training session,3,x,,,,7,3
+Trainings,End-user training session,3,x,,,,7,0
+Trainings,Training feedback collected,1,x,,,,3,0

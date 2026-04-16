@@ -110,6 +110,21 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Week banner (sticky) ──
+_today = date.today()
+_week_num = _today.isocalendar()[1]
+_date_str = f"{_today.strftime('%B')} {_today.day}, {_today.year}"
+st.markdown(
+    f"""<div style="
+        position:sticky; top:0; z-index:999;
+        background:#111111; color:#888888;
+        padding:6px 18px; font-size:12px; font-weight:600;
+        border-bottom:1px solid #1a1a1a; margin-bottom:8px;
+        letter-spacing:0.05em;
+    ">📅 WEEK {_week_num} &nbsp;·&nbsp; {_date_str}</div>""",
+    unsafe_allow_html=True,
+)
+
 
 # ─── Data Helpers ───
 
@@ -276,6 +291,75 @@ def migrate_client_dates(client):
     return client
 
 
+def sync_template_categories(client, template):
+    """Add missing categories and items from template to an existing client.
+
+    - Adds entire categories that are missing in the client's checklist.
+    - Adds missing items within existing categories.
+    - Never modifies or deletes existing items.
+    Returns (client, added_categories, added_items).
+    """
+    go_live_date = client.get("go_live_date", "")
+    try:
+        go_live_dt = date.fromisoformat(go_live_date) if go_live_date else None
+    except ValueError:
+        go_live_dt = None
+
+    roles = client.get("roles", {})
+    checklist = client.setdefault("checklist", {})
+    added_categories = []
+    added_items = []
+
+    for cat, tpl_items in template.items():
+        if cat not in checklist:
+            # Entire category missing — add it
+            checklist[cat] = []
+            for it in tpl_items:
+                assignee = it.get("default_assignee", "")
+                if roles and it.get("default_role"):
+                    assignee = roles.get(it["default_role"], assignee)
+                start_str, end_str = "", ""
+                if go_live_dt and it.get("start_offset_days") is not None and it.get("end_offset_days") is not None:
+                    start_str = str(go_live_dt - timedelta(days=it["start_offset_days"]))
+                    end_str   = str(go_live_dt - timedelta(days=it["end_offset_days"]))
+                checklist[cat].append({
+                    "id": str(uuid.uuid4())[:8],
+                    "item": it["item"],
+                    "points": it["points"],
+                    "status": "Not started",
+                    "assignee": assignee,
+                    "notes": "",
+                    "start_date": start_str,
+                    "end_date": end_str,
+                })
+            added_categories.append(cat)
+        else:
+            # Category exists — add items that are missing (match by item name)
+            existing_labels = {i["item"].strip().lower() for i in checklist[cat]}
+            for it in tpl_items:
+                if it["item"].strip().lower() not in existing_labels:
+                    assignee = it.get("default_assignee", "")
+                    if roles and it.get("default_role"):
+                        assignee = roles.get(it["default_role"], assignee)
+                    start_str, end_str = "", ""
+                    if go_live_dt and it.get("start_offset_days") is not None and it.get("end_offset_days") is not None:
+                        start_str = str(go_live_dt - timedelta(days=it["start_offset_days"]))
+                        end_str   = str(go_live_dt - timedelta(days=it["end_offset_days"]))
+                    checklist[cat].append({
+                        "id": str(uuid.uuid4())[:8],
+                        "item": it["item"],
+                        "points": it["points"],
+                        "status": "Not started",
+                        "assignee": assignee,
+                        "notes": "",
+                        "start_date": start_str,
+                        "end_date": end_str,
+                    })
+                    added_items.append(f"{cat} › {it['item']}")
+
+    return client, added_categories, added_items
+
+
 def load_all_clients():
     """Load all clients from Supabase."""
     res = supabase.table("clients").select("data").order("created_at", desc=True).execute()
@@ -438,6 +522,10 @@ def create_timeline_chart(client, selected_categories=None):
         "Integrations": "#6BCF7F",
         "Documents": "#95A5A6",
         "Notifications (Knock)": "#F4A460",
+        "Features": "#BB86FC",
+        "SOPs": "#03DAC6",
+        "UATs": "#CF6679",
+        "Trainings": "#FFB74D",
     }
 
     # Category icons
@@ -453,6 +541,10 @@ def create_timeline_chart(client, selected_categories=None):
         "Integrations": "🔗",
         "Documents": "📄",
         "Notifications (Knock)": "🔔",
+        "Features": "✨",
+        "SOPs": "📖",
+        "UATs": "🧪",
+        "Trainings": "🎓",
     }
 
     # Define category order (for y-axis grouping)
@@ -468,6 +560,10 @@ def create_timeline_chart(client, selected_categories=None):
         "Integrations",
         "Documents",
         "Notifications (Knock)",
+        "Features",
+        "SOPs",
+        "UATs",
+        "Trainings",
     ]
 
     for cat, items in client.get("checklist", {}).items():
@@ -705,6 +801,176 @@ def create_timeline_chart(client, selected_categories=None):
         margin=dict(l=250, r=60, t=80, b=60),
     )
 
+    return fig
+
+
+def create_external_timeline(client, selected_categories=None):
+    """Create a category-level timeline: one bar per category spanning its full date range."""
+    category_colors = {
+        "Master Data": "#FF6B6B",
+        "Master Data Setup": "#4ECDC4",
+        "Dashboard Setup": "#45B7D1",
+        "Transaction Migration": "#FFA07A",
+        "External Emails": "#98D8C8",
+        "Internal Emails": "#6C5CE7",
+        "Views": "#A8E6CF",
+        "Permissions & Access": "#FFD93D",
+        "Integrations": "#6BCF7F",
+        "Documents": "#95A5A6",
+        "Notifications (Knock)": "#F4A460",
+        "Features": "#BB86FC",
+        "SOPs": "#03DAC6",
+        "UATs": "#CF6679",
+        "Trainings": "#FFB74D",
+    }
+    category_icons = {
+        "Master Data": "◈", "Master Data Setup": "⚙️", "Dashboard Setup": "📊",
+        "Transaction Migration": "🔄", "External Emails": "✉️", "Internal Emails": "📨",
+        "Views": "👁️", "Permissions & Access": "🔐", "Integrations": "🔗",
+        "Documents": "📄", "Notifications (Knock)": "🔔",
+        "Features": "✨", "SOPs": "📖", "UATs": "🧪", "Trainings": "🎓",
+    }
+    category_order = [
+        "Master Data", "Master Data Setup", "Dashboard Setup", "Transaction Migration",
+        "External Emails", "Internal Emails", "Views", "Permissions & Access",
+        "Integrations", "Documents", "Notifications (Knock)",
+        "Features", "SOPs", "UATs", "Trainings",
+    ]
+
+    # Aggregate by category
+    cat_data = {}
+    for cat, items in client.get("checklist", {}).items():
+        if selected_categories and cat not in selected_categories:
+            continue
+        for it in items:
+            start = it.get("start_date", "")
+            end = it.get("end_date", "")
+            if not start or not end:
+                continue
+            try:
+                start_dt = datetime.fromisoformat(start).date()
+                end_dt = datetime.fromisoformat(end).date()
+                if end_dt < start_dt:
+                    end_dt = start_dt
+                if cat not in cat_data:
+                    cat_data[cat] = {
+                        "earliest_start": start_dt,
+                        "latest_end": end_dt,
+                        "total": 0,
+                        "done": 0,
+                    }
+                else:
+                    if start_dt < cat_data[cat]["earliest_start"]:
+                        cat_data[cat]["earliest_start"] = start_dt
+                    if end_dt > cat_data[cat]["latest_end"]:
+                        cat_data[cat]["latest_end"] = end_dt
+                cat_data[cat]["total"] += 1
+                if it.get("status") in ("Approved", "N/A"):
+                    cat_data[cat]["done"] += 1
+            except (ValueError, TypeError):
+                continue
+
+    if not cat_data:
+        return None
+
+    # Sort by category order
+    sorted_cats = sorted(
+        cat_data.keys(),
+        key=lambda x: category_order.index(x) if x in category_order else 999,
+    )
+
+    fig = go.Figure()
+    card_height = 0.8
+    y_position = 0
+    y_tick_vals = []
+    y_tick_labels = []
+
+    for cat in sorted_cats:
+        d = cat_data[cat]
+        icon = category_icons.get(cat, "📋")
+        color = category_colors.get(cat, "#95A5A6")
+        pct = int(d["done"] / d["total"] * 100) if d["total"] else 0
+        duration = (d["latest_end"] - d["earliest_start"]).days + 1
+
+        hover_text = (
+            f"<b>{icon} {cat}</b><br>"
+            f"<b>Tasks:</b> {d['total']} ({d['done']} done, {pct}%)<br>"
+            f"<b>Start:</b> {d['earliest_start'].strftime('%b %d, %Y')}<br>"
+            f"<b>End:</b> {d['latest_end'].strftime('%b %d, %Y')}<br>"
+            f"<b>Duration:</b> {duration} days"
+        )
+
+        y_bottom = y_position
+        y_top = y_position + card_height
+        mid_date = d["earliest_start"] + (d["latest_end"] - d["earliest_start"]) / 2
+        mid_y = y_bottom + card_height / 2
+
+        # Background bar
+        fig.add_shape(
+            type="rect",
+            x0=d["earliest_start"], x1=d["latest_end"],
+            y0=y_bottom, y1=y_top,
+            fillcolor=color, opacity=0.8,
+            line=dict(color='rgba(255,255,255,0.4)', width=1),
+            layer="below",
+        )
+        # Label
+        label = f"{icon} {cat}  ·  {d['done']}/{d['total']}  ·  {d['earliest_start'].strftime('%b %d')} → {d['latest_end'].strftime('%b %d')}"
+        fig.add_annotation(
+            x=mid_date, y=mid_y,
+            text=label,
+            showarrow=False,
+            font=dict(size=11, color='#ffffff'),
+            bgcolor='rgba(0,0,0,0.3)',
+            borderpad=4,
+        )
+        # Invisible hover point
+        fig.add_trace(go.Scatter(
+            x=[mid_date], y=[mid_y],
+            mode='markers',
+            marker=dict(size=0.1, color='rgba(0,0,0,0)'),
+            hovertemplate=hover_text + "<extra></extra>",
+            showlegend=False,
+        ))
+
+        y_tick_vals.append(mid_y)
+        y_tick_labels.append(f"{icon} {cat}")
+        y_position += card_height + 0.4
+
+    max_y = y_position
+    today = date.today()
+
+    # Today line
+    fig.add_shape(type="line", x0=today, x1=today, y0=-0.5, y1=max_y,
+                  line=dict(color="cyan", width=2, dash="dash"))
+    fig.add_annotation(x=today, y=max_y, text="Today", showarrow=False,
+                       yanchor="bottom", font=dict(color="cyan", size=12, weight="bold"))
+
+    # Go-live line
+    if client.get("go_live_date"):
+        try:
+            go_live_dt = date.fromisoformat(client["go_live_date"])
+            fig.add_shape(type="line", x0=go_live_dt, x1=go_live_dt, y0=-0.5, y1=max_y,
+                          line=dict(color="#e8d44d", width=3, dash="solid"))
+            fig.add_annotation(x=go_live_dt, y=max_y, text="Go-Live", showarrow=False,
+                               yanchor="bottom", font=dict(color="#e8d44d", size=12, weight="bold"))
+        except (ValueError, TypeError):
+            pass
+
+    fig.update_layout(
+        title={'text': "Go-Live Timeline (External)", 'x': 0.5, 'xanchor': 'center',
+               'font': {'size': 18, 'color': '#ffffff'}},
+        xaxis=dict(title="Timeline", type='date', gridcolor='rgba(255,255,255,0.1)', showgrid=True),
+        yaxis=dict(showticklabels=True, tickvals=y_tick_vals, ticktext=y_tick_labels,
+                   range=[-0.5, max_y + 0.5], gridcolor='rgba(255,255,255,0.05)', showgrid=False),
+        height=max(400, len(sorted_cats) * 60 + 150),
+        plot_bgcolor='rgba(10,10,10,1)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#ffffff', size=11),
+        hovermode='closest',
+        showlegend=False,
+        margin=dict(l=200, r=60, t=60, b=60),
+    )
     return fig
 
 
@@ -1069,6 +1335,30 @@ with st.expander("📝 **Client Info**", expanded=False):
                 active["roles"][role] = resolved
                 save_client(active)
 
+    # ── Sync from template ──
+    st.divider()
+    st.markdown("**Sync from template**")
+    st.caption("Adds missing categories and items from the default template. Never modifies existing data.")
+    if st.button("🔄 Sync missing categories & items", use_container_width=True, key="sync_template_btn"):
+        tpl = st.session_state.get("template") or load_template()
+        if tpl:
+            updated, added_cats, added_items = sync_template_categories(active, tpl)
+            save_client(updated)
+            refresh_clients()
+            total_added = len(added_cats) + len(added_items)
+            if total_added == 0:
+                st.success("✅ Already up to date — nothing to add.")
+            else:
+                msg_parts = []
+                if added_cats:
+                    msg_parts.append(f"**{len(added_cats)} new categories:** {', '.join(added_cats)}")
+                if added_items:
+                    msg_parts.append(f"**{len(added_items)} new items** in existing categories")
+                st.success("✅ Synced! " + " · ".join(msg_parts))
+            st.rerun()
+        else:
+            st.error("Could not load template.")
+
 
 # ── Overall Stats ──
 st.divider()
@@ -1097,7 +1387,7 @@ st.divider()
 
 
 # ── View Tabs ──
-tab_checklist, tab_timeline = st.tabs(["📋 Checklist", "📅 Timeline"])
+tab_checklist, tab_ext, tab_int = st.tabs(["📋 Checklist", "📅 Timeline (External)", "🔍 Timeline (Internal)"])
 
 with tab_checklist:
     # ── Category Filter ──
@@ -1123,6 +1413,10 @@ with tab_checklist:
         "Integrations": "🔗",
         "Documents": "📄",
         "Notifications (Knock)": "🔔",
+        "Features": "✨",
+        "SOPs": "📖",
+        "UATs": "🧪",
+        "Trainings": "🎓",
     }
 
     # Collect all assignee options for SelectboxColumn
@@ -1313,9 +1607,37 @@ with tab_checklist:
         save_client(active)
         refresh_clients()
 
-with tab_timeline:
-    st.markdown("### 📅 Go-Live Timeline")
-    st.caption("Visual timeline of all tasks grouped by category with date ranges")
+with tab_ext:
+    st.markdown("### 📅 Timeline (External)")
+    st.caption("One bar per category — spans from earliest task start to latest task end")
+
+    all_categories_ext = list(active.get("checklist", {}).keys())
+    if all_categories_ext:
+        col_fe1, col_fe2 = st.columns([3, 1])
+        with col_fe1:
+            sel_cats_ext = st.multiselect(
+                "Filter by categories",
+                options=all_categories_ext,
+                default=all_categories_ext,
+                key="ext_cat_filter",
+                help="Select which categories to display",
+            )
+        with col_fe2:
+            st.write("")
+            if st.button("Select All", key="ext_select_all", use_container_width=True):
+                st.rerun()
+        ext_fig = create_external_timeline(active, selected_categories=sel_cats_ext if sel_cats_ext else None)
+    else:
+        ext_fig = create_external_timeline(active)
+
+    if ext_fig is None:
+        st.info("⏳ No tasks with date ranges yet. Add start and end dates to tasks in the Checklist tab to see them here.")
+    else:
+        st.plotly_chart(ext_fig, use_container_width=True)
+
+with tab_int:
+    st.markdown("### 🔍 Timeline (Internal)")
+    st.caption("Detailed view — one bar per task, grouped by category")
 
     # Get all available categories from checklist
     all_categories = list(active.get("checklist", {}).keys())
@@ -1332,7 +1654,7 @@ with tab_timeline:
             )
         with col_filter2:
             st.write("")  # Spacer
-            if st.button("Select All", use_container_width=True):
+            if st.button("Select All", key="int_select_all", use_container_width=True):
                 st.rerun()
 
         # Create and display timeline chart with filtered categories
