@@ -51,6 +51,31 @@ ROLE_LABELS = {
     "dashboard": "Dashboard",
 }
 
+CATEGORY_ORDER = [
+    "Master Data", "Master Data Setup", "Dashboard Setup", "Transaction Migration",
+    "External Emails", "Internal Emails", "Views", "Permissions & Access",
+    "Integrations", "Documents", "Notifications (Knock)", "Features",
+    "SOPs", "UATs", "Trainings",
+]
+
+CATEGORY_COLORS = {
+    "Master Data": "#FF6B6B", "Master Data Setup": "#4ECDC4",
+    "Dashboard Setup": "#45B7D1", "Transaction Migration": "#FFA07A",
+    "External Emails": "#98D8C8", "Internal Emails": "#6C5CE7",
+    "Views": "#A8E6CF", "Permissions & Access": "#FFD93D",
+    "Integrations": "#6BCF7F", "Documents": "#95A5A6",
+    "Notifications (Knock)": "#F4A460", "Features": "#BB86FC",
+    "SOPs": "#03DAC6", "UATs": "#CF6679", "Trainings": "#FFB74D",
+}
+
+CATEGORY_ICONS = {
+    "Master Data": "◈", "Master Data Setup": "⚙️", "Dashboard Setup": "📊",
+    "Transaction Migration": "🔄", "External Emails": "✉️", "Internal Emails": "📨",
+    "Views": "👁️", "Permissions & Access": "🔐", "Integrations": "🔗",
+    "Documents": "📄", "Notifications (Knock)": "🔔", "Features": "✨",
+    "SOPs": "📖", "UATs": "🧪", "Trainings": "🎓",
+}
+
 # ─── Custom CSS ───
 st.markdown("""
 <style>
@@ -485,6 +510,226 @@ def get_client_stats(client):
     }
 
 
+def get_process_violations(client, stats):
+    """Return a list of human-readable process violation strings for a client."""
+    violations = []
+    today = date.today()
+    checklist = client.get("checklist", {})
+
+    go_live = client.get("go_live_date", "")
+    try:
+        go_live_dt = date.fromisoformat(go_live) if go_live else None
+        days_left = (go_live_dt - today).days if go_live_dt else None
+    except (ValueError, TypeError):
+        go_live_dt = None
+        days_left = None
+
+    # Rule 1: overdue items (end_date < today and not Approved/N/A)
+    for cat, items in checklist.items():
+        overdue = []
+        for it in items:
+            end = it.get("end_date", "")
+            if not end or it["status"] in ("Approved", "N/A"):
+                continue
+            try:
+                if date.fromisoformat(end) < today:
+                    overdue.append(it["item"])
+            except (ValueError, TypeError):
+                pass
+        if overdue:
+            violations.append(f"{cat} — {len(overdue)} item(s) overdue")
+
+    # Rule 2: category behind schedule relative to go-live
+    if days_left is not None and 0 <= days_left <= 14:
+        for cat, cat_s in stats["by_category"].items():
+            if cat_s["pct"] < 50 and cat_s["total"] > 0:
+                violations.append(f"{cat} only {cat_s['pct']}% with {days_left}d to go-live")
+
+    # Rule 3: late categories started before early ones are done
+    # "Early" = first half of CATEGORY_ORDER, "Late" = UATs / Trainings
+    early_cats = CATEGORY_ORDER[:8]
+    late_cats = ["UATs", "Trainings"]
+
+    early_incomplete = any(
+        stats["by_category"].get(c, {}).get("pct", 0) < 30
+        for c in early_cats if c in stats["by_category"]
+    )
+    for cat in late_cats:
+        cat_s = stats["by_category"].get(cat, {})
+        if cat_s.get("done", 0) > 0 and early_incomplete:
+            violations.append(f"{cat} started before foundational categories complete")
+
+    return violations
+
+
+def _parse_approved_at(it):
+    val = it.get("approved_at", "")
+    if not val:
+        return None
+    try:
+        return datetime.fromisoformat(val)
+    except (ValueError, TypeError):
+        return None
+
+def _first_approved_at(items):
+    """Earliest approved_at timestamp in a list of items."""
+    ts = [t for it in items if (t := _parse_approved_at(it)) is not None]
+    return min(ts) if ts else None
+
+def _last_approved_at(items):
+    """Latest approved_at timestamp in a list of items."""
+    ts = [t for it in items if (t := _parse_approved_at(it)) is not None]
+    return max(ts) if ts else None
+
+
+def get_compliance_results(clients, all_stats):
+    """Evaluate protocol compliance rules for all clients.
+
+    Returns a list of rule dicts:
+      {"label": str, "desc": str, "results": {client_id: "pass"|"fail"|"na"}}
+    """
+    today = date.today()
+
+    # Categories considered "setup/config" work that must precede UATs
+    CONFIG_CATS = [
+        "Master Data", "Master Data Setup", "Dashboard Setup",
+        "External Emails", "Internal Emails", "Views",
+        "Permissions & Access", "Documents",
+    ]
+
+    rules_meta = [
+        ("Master Data 100% complete", "All Master Data items must be Approved before go-live."),
+        ("SOPs done before UATs", "All SOP items must be Approved before the first UAT is approved."),
+        ("Config/Setup done before UATs", "Setup categories (Master Data, Emails, Views…) must be complete before any UAT is approved."),
+        ("UATs complete before go-live", "All UAT items must be Approved before the go-live date."),
+        ("No overdue items", "No item with an end date in the past should be pending."),
+        ("On schedule", "Progress is consistent with time remaining to go-live."),
+    ]
+
+    compliance = [{"label": lbl, "desc": desc, "results": {}} for lbl, desc in rules_meta]
+
+    for client, stats in zip(clients, all_stats):
+        cid = client["id"]
+        checklist = client.get("checklist", {})
+        go_live = client.get("go_live_date", "")
+        try:
+            go_live_dt = date.fromisoformat(go_live) if go_live else None
+            days_left = (go_live_dt - today).days if go_live_dt else None
+        except (ValueError, TypeError):
+            go_live_dt = None
+            days_left = None
+
+        sops = checklist.get("SOPs", [])
+        uats = checklist.get("UATs", [])
+
+        # ── Rule 0: Master Data 100% ──
+        md_pct = stats["by_category"].get("Master Data", {}).get("pct", None)
+        if md_pct is None:
+            compliance[0]["results"][cid] = "na"
+        else:
+            compliance[0]["results"][cid] = "pass" if md_pct == 100 else "fail"
+
+        # ── Rule 1: SOPs done before first UAT approved ──
+        if not sops or not uats:
+            compliance[1]["results"][cid] = "na"
+        else:
+            first_uat_ts = _first_approved_at(uats)
+            if first_uat_ts is None:
+                # No UAT approved yet — pass (nothing violated)
+                compliance[1]["results"][cid] = "pass"
+            else:
+                last_sop_ts = _last_approved_at(sops)
+                sops_pct = stats["by_category"].get("SOPs", {}).get("pct", 0)
+                if sops_pct < 100:
+                    # UAT approved but SOPs not complete → fail regardless of timestamps
+                    compliance[1]["results"][cid] = "fail"
+                elif last_sop_ts is not None and last_sop_ts < first_uat_ts:
+                    # Last SOP was approved before first UAT → correct order
+                    compliance[1]["results"][cid] = "pass"
+                else:
+                    # SOPs done but no timestamps to verify order
+                    compliance[1]["results"][cid] = "pass"
+
+        # ── Rule 2: Config/Setup done before UATs ──
+        config_items = [it for cat in CONFIG_CATS for it in checklist.get(cat, [])]
+        if not config_items or not uats:
+            compliance[2]["results"][cid] = "na"
+        else:
+            first_uat_ts = _first_approved_at(uats)
+            if first_uat_ts is None:
+                # No UAT approved yet
+                compliance[2]["results"][cid] = "na"
+            else:
+                # Check: any config item still not done when UATs started?
+                config_not_done = [
+                    it for it in config_items
+                    if it["status"] not in ("Approved", "N/A")
+                ]
+                if config_not_done:
+                    # Config items still pending while UATs are approved → fail
+                    compliance[2]["results"][cid] = "fail"
+                else:
+                    # All config done — verify order with timestamps if available
+                    last_config_ts = _last_approved_at(config_items)
+                    if last_config_ts is not None:
+                        compliance[2]["results"][cid] = "pass" if last_config_ts < first_uat_ts else "fail"
+                    else:
+                        compliance[2]["results"][cid] = "pass"  # done but no timestamps
+
+        # ── Rule 3: UATs complete before go-live ──
+        uat_pct = stats["by_category"].get("UATs", {}).get("pct", None)
+        if uat_pct is None or go_live_dt is None:
+            compliance[3]["results"][cid] = "na"
+        elif uat_pct == 100:
+            # Verify last UAT was approved before go-live date
+            last_uat_ts = _last_approved_at(uats)
+            if last_uat_ts is not None:
+                compliance[3]["results"][cid] = "pass" if last_uat_ts.date() <= go_live_dt else "fail"
+            else:
+                # 100% done but no timestamps — fall back to end_date
+                uat_ends = []
+                for it in uats:
+                    try:
+                        uat_ends.append(date.fromisoformat(it.get("end_date", "")))
+                    except (ValueError, TypeError):
+                        pass
+                compliance[3]["results"][cid] = "pass" if (not uat_ends or max(uat_ends) <= go_live_dt) else "fail"
+        else:
+            compliance[3]["results"][cid] = "fail" if (days_left is not None and days_left <= 14) else "na"
+
+        # ── Rule 4: No overdue items ──
+        items_with_dates = 0
+        has_overdue = False
+        for items in checklist.values():
+            for it in items:
+                end = it.get("end_date", "")
+                if end and it["status"] not in ("Approved", "N/A"):
+                    items_with_dates += 1
+                    try:
+                        if date.fromisoformat(end) < today:
+                            has_overdue = True
+                    except (ValueError, TypeError):
+                        pass
+        if items_with_dates == 0:
+            compliance[4]["results"][cid] = "na"
+        else:
+            compliance[4]["results"][cid] = "fail" if has_overdue else "pass"
+
+        # ── Rule 5: On schedule ──
+        if days_left is None:
+            compliance[5]["results"][cid] = "na"
+        elif days_left < 0:
+            compliance[5]["results"][cid] = "fail" if stats["pct"] < 100 else "pass"
+        elif days_left <= 14 and stats["pct"] < 50:
+            compliance[5]["results"][cid] = "fail"
+        elif days_left <= 30 and stats["pct"] < 25:
+            compliance[5]["results"][cid] = "fail"
+        else:
+            compliance[5]["results"][cid] = "pass"
+
+    return compliance
+
+
 def get_all_assignees(client):
     """Collect all unique assignee names from a client's checklist + team members."""
     names = set()
@@ -508,63 +753,6 @@ def create_timeline_chart(client, selected_categories=None):
         selected_categories: List of category names to display (None = all categories)
     """
     tasks_data = []
-
-    # Define category colors
-    category_colors = {
-        "Master Data": "#FF6B6B",
-        "Master Data Setup": "#4ECDC4",
-        "Dashboard Setup": "#45B7D1",
-        "Transaction Migration": "#FFA07A",
-        "External Emails": "#98D8C8",
-        "Internal Emails": "#6C5CE7",
-        "Views": "#A8E6CF",
-        "Permissions & Access": "#FFD93D",
-        "Integrations": "#6BCF7F",
-        "Documents": "#95A5A6",
-        "Notifications (Knock)": "#F4A460",
-        "Features": "#BB86FC",
-        "SOPs": "#03DAC6",
-        "UATs": "#CF6679",
-        "Trainings": "#FFB74D",
-    }
-
-    # Category icons
-    category_icons = {
-        "Master Data": "◈",
-        "Master Data Setup": "⚙️",
-        "Dashboard Setup": "📊",
-        "Transaction Migration": "🔄",
-        "External Emails": "✉️",
-        "Internal Emails": "📨",
-        "Views": "👁️",
-        "Permissions & Access": "🔐",
-        "Integrations": "🔗",
-        "Documents": "📄",
-        "Notifications (Knock)": "🔔",
-        "Features": "✨",
-        "SOPs": "📖",
-        "UATs": "🧪",
-        "Trainings": "🎓",
-    }
-
-    # Define category order (for y-axis grouping)
-    category_order = [
-        "Master Data",
-        "Master Data Setup",
-        "Dashboard Setup",
-        "Transaction Migration",
-        "External Emails",
-        "Internal Emails",
-        "Views",
-        "Permissions & Access",
-        "Integrations",
-        "Documents",
-        "Notifications (Knock)",
-        "Features",
-        "SOPs",
-        "UATs",
-        "Trainings",
-    ]
 
     for cat, items in client.get("checklist", {}).items():
         # Filter by selected categories
@@ -595,7 +783,7 @@ def create_timeline_chart(client, selected_categories=None):
                     "Status": it["status"],
                     "Assignee": it.get("assignee", "Unassigned"),
                     "Points": it["points"],
-                    "Icon": category_icons.get(cat, "📋"),
+                    "Icon": CATEGORY_ICONS.get(cat, "📋"),
                 })
             except (ValueError, TypeError):
                 continue
@@ -606,7 +794,7 @@ def create_timeline_chart(client, selected_categories=None):
     df = pd.DataFrame(tasks_data)
 
     # Sort by category order, then by start date within each category
-    df["CategoryOrder"] = df["Category"].map(lambda x: category_order.index(x) if x in category_order else 999)
+    df["CategoryOrder"] = df["Category"].map(lambda x: CATEGORY_ORDER.index(x) if x in CATEGORY_ORDER else 999)
     df = df.sort_values(["CategoryOrder", "Start"])
 
     # Create figure
@@ -637,7 +825,7 @@ def create_timeline_chart(client, selected_categories=None):
 
             # Add category label
             y_tick_vals.append(y_position + card_height / 2)
-            y_tick_labels.append(f"{category_icons.get(current_category, '📋')} {current_category}")
+            y_tick_labels.append(f"{CATEGORY_ICONS.get(current_category, '📋')} {current_category}")
 
         # Assign this task's y-position
         df.at[idx, "YPosition"] = y_position
@@ -660,7 +848,7 @@ def create_timeline_chart(client, selected_categories=None):
             x1=df["Finish"].max(),
             y0=y_range["min"] - vertical_gap,
             y1=y_range["max"] + vertical_gap / 2,
-            fillcolor=category_colors.get(cat, "#95A5A6"),
+            fillcolor=CATEGORY_COLORS.get(cat, "#95A5A6"),
             opacity=0.05,
             line=dict(width=0),
             layer="below",
@@ -806,37 +994,6 @@ def create_timeline_chart(client, selected_categories=None):
 
 def create_external_timeline(client, selected_categories=None):
     """Create a category-level timeline: one bar per category spanning its full date range."""
-    category_colors = {
-        "Master Data": "#FF6B6B",
-        "Master Data Setup": "#4ECDC4",
-        "Dashboard Setup": "#45B7D1",
-        "Transaction Migration": "#FFA07A",
-        "External Emails": "#98D8C8",
-        "Internal Emails": "#6C5CE7",
-        "Views": "#A8E6CF",
-        "Permissions & Access": "#FFD93D",
-        "Integrations": "#6BCF7F",
-        "Documents": "#95A5A6",
-        "Notifications (Knock)": "#F4A460",
-        "Features": "#BB86FC",
-        "SOPs": "#03DAC6",
-        "UATs": "#CF6679",
-        "Trainings": "#FFB74D",
-    }
-    category_icons = {
-        "Master Data": "◈", "Master Data Setup": "⚙️", "Dashboard Setup": "📊",
-        "Transaction Migration": "🔄", "External Emails": "✉️", "Internal Emails": "📨",
-        "Views": "👁️", "Permissions & Access": "🔐", "Integrations": "🔗",
-        "Documents": "📄", "Notifications (Knock)": "🔔",
-        "Features": "✨", "SOPs": "📖", "UATs": "🧪", "Trainings": "🎓",
-    }
-    category_order = [
-        "Master Data", "Master Data Setup", "Dashboard Setup", "Transaction Migration",
-        "External Emails", "Internal Emails", "Views", "Permissions & Access",
-        "Integrations", "Documents", "Notifications (Knock)",
-        "Features", "SOPs", "UATs", "Trainings",
-    ]
-
     # Aggregate by category
     cat_data = {}
     for cat, items in client.get("checklist", {}).items():
@@ -876,7 +1033,7 @@ def create_external_timeline(client, selected_categories=None):
     # Sort by category order
     sorted_cats = sorted(
         cat_data.keys(),
-        key=lambda x: category_order.index(x) if x in category_order else 999,
+        key=lambda x: CATEGORY_ORDER.index(x) if x in CATEGORY_ORDER else 999,
     )
 
     fig = go.Figure()
@@ -887,8 +1044,8 @@ def create_external_timeline(client, selected_categories=None):
 
     for cat in sorted_cats:
         d = cat_data[cat]
-        icon = category_icons.get(cat, "📋")
-        color = category_colors.get(cat, "#95A5A6")
+        icon = CATEGORY_ICONS.get(cat, "📋")
+        color = CATEGORY_COLORS.get(cat, "#95A5A6")
         pct = int(d["done"] / d["total"] * 100) if d["total"] else 0
         duration = (d["latest_end"] - d["earliest_start"]).days + 1
 
@@ -982,6 +1139,12 @@ if "clients" not in st.session_state:
 if "active_client_id" not in st.session_state:
     st.session_state.active_client_id = None
 
+if "view_mode" not in st.session_state:
+    st.session_state.view_mode = "manager"
+
+if "manager_sub" not in st.session_state:
+    st.session_state.manager_sub = "clients"
+
 if "template" not in st.session_state:
     st.session_state.template = load_template()
 
@@ -1011,209 +1174,252 @@ with st.sidebar:
     st.caption("Jules · CS Configuration")
     st.divider()
 
-    # ── New Client ──
-    with st.expander("➕ **New Client**", expanded=False):
-        new_name = st.text_input("Client name", key="new_name")
-        col1, col2 = st.columns(2)
-        with col1:
-            new_tier = st.selectbox("Tier", TIERS, key="new_tier")
-        with col2:
-            new_date = st.date_input("Go-Live date", value=None, key="new_date")
-        # ── Role Assignments ──
-        st.markdown("**Team Roles**")
-        role_selections = {}
-        new_members_to_save = []
+    # ── Navigation ──
+    nav_col1, nav_col2 = st.columns(2)
+    with nav_col1:
+        if st.button(
+            "📊 Manager",
+            use_container_width=True,
+            type="primary" if st.session_state.view_mode == "manager" else "secondary",
+        ):
+            st.session_state.view_mode = "manager"
+            st.session_state.active_client_id = None
+            st.rerun()
+    with nav_col2:
+        if st.button(
+            "👤 Accounts",
+            use_container_width=True,
+            type="primary" if st.session_state.view_mode == "client" else "secondary",
+        ):
+            st.session_state.view_mode = "client"
+            st.rerun()
+    st.divider()
 
-        for role in ROLES:
-            label = ROLE_LABELS[role]
-            members = st.session_state.team_members.get(role, [])
-            options = ["(none)"] + members + ["-- Add new --"]
-            sel = st.selectbox(label, options, key=f"new_role_{role}")
+    if st.session_state.view_mode == "manager":
+        sub_col1, sub_col2 = st.columns(2)
+        with sub_col1:
+            if st.button(
+                "👥 Clients",
+                use_container_width=True,
+                type="primary" if st.session_state.manager_sub == "clients" else "secondary",
+            ):
+                st.session_state.manager_sub = "clients"
+                st.rerun()
+        with sub_col2:
+            if st.button(
+                "✅ Protocol",
+                use_container_width=True,
+                type="primary" if st.session_state.manager_sub == "compliance" else "secondary",
+            ):
+                st.session_state.manager_sub = "compliance"
+                st.rerun()
+        st.divider()
 
-            if sel == "-- Add new --":
-                new_member = st.text_input(f"New {label} name", key=f"new_member_{role}")
-                if new_member.strip():
-                    role_selections[role] = new_member.strip()
-                    new_members_to_save.append((new_member.strip(), role))
-                else:
+    if st.session_state.view_mode == "client":
+        # ── New Client ──
+        with st.expander("➕ **New Client**", expanded=False):
+            new_name = st.text_input("Client name", key="new_name")
+            col1, col2 = st.columns(2)
+            with col1:
+                new_tier = st.selectbox("Tier", TIERS, key="new_tier")
+            with col2:
+                new_date = st.date_input("Go-Live date", value=None, key="new_date")
+            # ── Role Assignments ──
+            st.markdown("**Team Roles**")
+            role_selections = {}
+            new_members_to_save = []
+
+            for role in ROLES:
+                label = ROLE_LABELS[role]
+                members = st.session_state.team_members.get(role, [])
+                options = ["(none)"] + members + ["-- Add new --"]
+                sel = st.selectbox(label, options, key=f"new_role_{role}")
+
+                if sel == "-- Add new --":
+                    new_member = st.text_input(f"New {label} name", key=f"new_member_{role}")
+                    if new_member.strip():
+                        role_selections[role] = new_member.strip()
+                        new_members_to_save.append((new_member.strip(), role))
+                    else:
+                        role_selections[role] = ""
+                elif sel == "(none)":
                     role_selections[role] = ""
-            elif sel == "(none)":
-                role_selections[role] = ""
-            else:
-                role_selections[role] = sel
-
-        # ── Template Selection ──
-        st.divider()
-        st.markdown("**Template**")
-        custom_csv = st.file_uploader(
-            "Upload custom template CSV",
-            type=["csv"],
-            key="custom_csv",
-            help="If a file is uploaded here, it will be used instead of the dropdown selection below.",
-        )
-        template_options = ["Default (file)"] + [t["name"] for t in st.session_state.db_templates]
-        selected_template = st.selectbox(
-            "Or select a saved template",
-            template_options,
-            key="new_template",
-            disabled=(custom_csv is not None),
-            help="Disabled when a custom CSV is uploaded above.",
-        )
-
-        if st.button("🚀 Create Client", use_container_width=True, type="primary"):
-            if new_name.strip():
-                # Check for duplicate name
-                existing_names = [c["name"].lower() for c in st.session_state.clients]
-                if new_name.strip().lower() in existing_names:
-                    st.warning("A client with this name already exists.")
                 else:
-                    # Save any new team members first
-                    for member_name, member_role in new_members_to_save:
-                        save_team_member(member_name, member_role)
-                    if new_members_to_save:
-                        refresh_team()
+                    role_selections[role] = sel
 
-                    # Resolve template
-                    tpl = None
-                    tpl_id = ""
-                    if custom_csv is not None:
-                        tpl = load_template(csv_source=custom_csv)
-                    elif selected_template != "Default (file)":
-                        # Find the DB template
-                        for db_tpl in st.session_state.db_templates:
-                            if db_tpl["name"] == selected_template:
-                                tpl = db_tpl["data"]
-                                tpl_id = db_tpl["id"]
-                                break
+            # ── Template Selection ──
+            st.divider()
+            st.markdown("**Template**")
+            custom_csv = st.file_uploader(
+                "Upload custom template CSV",
+                type=["csv"],
+                key="custom_csv",
+                help="If a file is uploaded here, it will be used instead of the dropdown selection below.",
+            )
+            template_options = ["Default (file)"] + [t["name"] for t in st.session_state.db_templates]
+            selected_template = st.selectbox(
+                "Or select a saved template",
+                template_options,
+                key="new_template",
+                disabled=(custom_csv is not None),
+                help="Disabled when a custom CSV is uploaded above.",
+            )
+
+            if st.button("🚀 Create Client", use_container_width=True, type="primary"):
+                if new_name.strip():
+                    # Check for duplicate name
+                    existing_names = [c["name"].lower() for c in st.session_state.clients]
+                    if new_name.strip().lower() in existing_names:
+                        st.warning("A client with this name already exists.")
                     else:
-                        tpl = st.session_state.template
+                        # Save any new team members first
+                        for member_name, member_role in new_members_to_save:
+                            save_team_member(member_name, member_role)
+                        if new_members_to_save:
+                            refresh_team()
 
-                    if tpl:
-                        # Clean role selections (remove empty)
-                        roles = {k: v for k, v in role_selections.items() if v}
-                        client = create_client(
-                            new_name.strip(), new_tier, new_date,
-                            roles.get("csm", ""), roles.get("cs_config", ""), tpl,
-                            roles=roles, template_id=tpl_id,
-                        )
-                        save_client(client)
-                        refresh_clients()
-                        st.session_state.active_client_id = client["id"]
-                        st.rerun()
-                    else:
-                        st.error("No valid template loaded.")
-            else:
-                st.warning("Enter a client name.")
+                        # Resolve template
+                        tpl = None
+                        tpl_id = ""
+                        if custom_csv is not None:
+                            tpl = load_template(csv_source=custom_csv)
+                        elif selected_template != "Default (file)":
+                            # Find the DB template
+                            for db_tpl in st.session_state.db_templates:
+                                if db_tpl["name"] == selected_template:
+                                    tpl = db_tpl["data"]
+                                    tpl_id = db_tpl["id"]
+                                    break
+                        else:
+                            tpl = st.session_state.template
 
-    st.divider()
-
-    # ── Client List ──
-    st.markdown("### Clients")
-
-    if not st.session_state.clients:
-        st.caption("No clients yet. Create one above.")
-    else:
-        for client in st.session_state.clients:
-            stats = get_client_stats(client)
-            is_active = client["id"] == st.session_state.active_client_id
-
-            # Client button
-            label = f"{'▸ ' if is_active else '  '}{client['name']}"
-            col_btn, col_pct = st.columns([4, 1])
-            with col_btn:
-                if st.button(
-                    label,
-                    key=f"client_{client['id']}",
-                    use_container_width=True,
-                    type="primary" if is_active else "secondary",
-                ):
-                    st.session_state.active_client_id = client["id"]
-                    st.rerun()
-            with col_pct:
-                color = "🟢" if stats["pct"] == 100 else "🟡" if stats["pct"] > 50 else "🔴"
-                st.markdown(f"<div style='text-align:center;padding-top:8px;font-size:13px;'>{color} {stats['pct']}%</div>", unsafe_allow_html=True)
-
-            # Mini progress bar
-            st.progress(stats["pct"] / 100)
-
-    st.divider()
-
-    # ── Template Management ──
-    with st.expander("📋 **Templates**", expanded=False):
-        st.caption("Manage Go-Live templates")
-
-        # ── All available templates ──
-        st.markdown("**Available templates**")
-
-        # Default (file-based) template
-        default_tpl = st.session_state.template
-        default_cats = len(default_tpl) if default_tpl else 0
-        default_items = sum(len(v) for v in default_tpl.values()) if default_tpl else 0
-        col_n, col_dl = st.columns([3, 1])
-        with col_n:
-            st.caption(f"📋 **Default** — {default_cats} categories, {default_items} items")
-        with col_dl:
-            if TEMPLATE_PATH.exists():
-                with open(TEMPLATE_PATH, "rb") as f:
-                    st.download_button(
-                        "⬇️",
-                        f.read(),
-                        file_name="golive_template.csv",
-                        mime="text/csv",
-                        key="dl_default_tpl",
-                    )
-
-        # DB templates
-        if st.session_state.db_templates:
-            for tpl in st.session_state.db_templates:
-                tpl_data = tpl["data"] if isinstance(tpl["data"], dict) else {}
-                cat_count = len(tpl_data)
-                item_count = sum(len(v) for v in tpl_data.values())
-                col_n, col_dl, col_del = st.columns([3, 1, 1])
-                with col_n:
-                    st.caption(f"📋 **{tpl['name']}** — {cat_count} categories, {item_count} items")
-                with col_dl:
-                    # Build CSV from template data for download
-                    rows = []
-                    for cat, items in tpl_data.items():
-                        for it in items:
-                            row = {"category": cat, "item": it.get("item", ""), "points": it.get("points", 1)}
-                            for role in ROLES:
-                                row[role] = "x" if it.get("default_role") == role else ""
-                            rows.append(row)
-                    if rows:
-                        tpl_csv = pd.DataFrame(rows).to_csv(index=False)
-                    else:
-                        tpl_csv = ""
-                    st.download_button(
-                        "⬇️",
-                        tpl_csv,
-                        file_name=f"{tpl['name'].lower().replace(' ', '_')}_template.csv",
-                        mime="text/csv",
-                        key=f"dl_tpl_{tpl['id']}",
-                    )
-                with col_del:
-                    if st.button("🗑", key=f"del_tpl_{tpl['id']}"):
-                        delete_template_from_db(tpl["id"])
-                        refresh_templates()
-                        st.rerun()
-        else:
-            st.caption("_No saved templates yet._")
+                        if tpl:
+                            # Clean role selections (remove empty)
+                            roles = {k: v for k, v in role_selections.items() if v}
+                            client = create_client(
+                                new_name.strip(), new_tier, new_date,
+                                roles.get("csm", ""), roles.get("cs_config", ""), tpl,
+                                roles=roles, template_id=tpl_id,
+                            )
+                            save_client(client)
+                            refresh_clients()
+                            st.session_state.active_client_id = client["id"]
+                            st.rerun()
+                        else:
+                            st.error("No valid template loaded.")
+                else:
+                    st.warning("Enter a client name.")
 
         st.divider()
 
-        # ── Upload new template ──
-        st.markdown("**Upload a new template**")
-        tpl_name = st.text_input("Template name", key="tpl_upload_name")
-        tpl_file = st.file_uploader("Template CSV", type=["csv"], key="tpl_upload_file")
-        if tpl_file is not None and tpl_name.strip():
-            if st.button("💾 Save template", use_container_width=True):
-                parsed = load_template(csv_source=tpl_file)
-                if parsed:
-                    if save_template_to_db(tpl_name.strip(), parsed):
-                        refresh_templates()
-                        st.success(f"Template '{tpl_name.strip()}' saved!")
+        # ── Client List ──
+        st.markdown("### Clients")
+
+        if not st.session_state.clients:
+            st.caption("No clients yet. Create one above.")
+        else:
+            for client in st.session_state.clients:
+                stats = get_client_stats(client)
+                is_active = client["id"] == st.session_state.active_client_id
+
+                # Client button
+                label = f"{'▸ ' if is_active else '  '}{client['name']}"
+                col_btn, col_pct = st.columns([4, 1])
+                with col_btn:
+                    if st.button(
+                        label,
+                        key=f"client_{client['id']}",
+                        use_container_width=True,
+                        type="primary" if is_active else "secondary",
+                    ):
+                        st.session_state.active_client_id = client["id"]
+                        st.session_state.view_mode = "client"
                         st.rerun()
+                with col_pct:
+                    color = "🟢" if stats["pct"] == 100 else "🟡" if stats["pct"] > 50 else "🔴"
+                    st.markdown(f"<div style='text-align:center;padding-top:8px;font-size:13px;'>{color} {stats['pct']}%</div>", unsafe_allow_html=True)
+
+                # Mini progress bar
+                st.progress(stats["pct"] / 100)
+
+        st.divider()
+
+        # ── Template Management ──
+        with st.expander("📋 **Templates**", expanded=False):
+            st.caption("Manage Go-Live templates")
+
+            # ── All available templates ──
+            st.markdown("**Available templates**")
+
+            # Default (file-based) template
+            default_tpl = st.session_state.template
+            default_cats = len(default_tpl) if default_tpl else 0
+            default_items = sum(len(v) for v in default_tpl.values()) if default_tpl else 0
+            col_n, col_dl = st.columns([3, 1])
+            with col_n:
+                st.caption(f"📋 **Default** — {default_cats} categories, {default_items} items")
+            with col_dl:
+                if TEMPLATE_PATH.exists():
+                    with open(TEMPLATE_PATH, "rb") as f:
+                        st.download_button(
+                            "⬇️",
+                            f.read(),
+                            file_name="golive_template.csv",
+                            mime="text/csv",
+                            key="dl_default_tpl",
+                        )
+
+            # DB templates
+            if st.session_state.db_templates:
+                for tpl in st.session_state.db_templates:
+                    tpl_data = tpl["data"] if isinstance(tpl["data"], dict) else {}
+                    cat_count = len(tpl_data)
+                    item_count = sum(len(v) for v in tpl_data.values())
+                    col_n, col_dl, col_del = st.columns([3, 1, 1])
+                    with col_n:
+                        st.caption(f"📋 **{tpl['name']}** — {cat_count} categories, {item_count} items")
+                    with col_dl:
+                        # Build CSV from template data for download
+                        rows = []
+                        for cat, items in tpl_data.items():
+                            for it in items:
+                                row = {"category": cat, "item": it.get("item", ""), "points": it.get("points", 1)}
+                                for role in ROLES:
+                                    row[role] = "x" if it.get("default_role") == role else ""
+                                rows.append(row)
+                        if rows:
+                            tpl_csv = pd.DataFrame(rows).to_csv(index=False)
+                        else:
+                            tpl_csv = ""
+                        st.download_button(
+                            "⬇️",
+                            tpl_csv,
+                            file_name=f"{tpl['name'].lower().replace(' ', '_')}_template.csv",
+                            mime="text/csv",
+                            key=f"dl_tpl_{tpl['id']}",
+                        )
+                    with col_del:
+                        if st.button("🗑", key=f"del_tpl_{tpl['id']}"):
+                            delete_template_from_db(tpl["id"])
+                            refresh_templates()
+                            st.rerun()
+            else:
+                st.caption("_No saved templates yet._")
+
+            st.divider()
+
+            # ── Upload new template ──
+            st.markdown("**Upload a new template**")
+            tpl_name = st.text_input("Template name", key="tpl_upload_name")
+            tpl_file = st.file_uploader("Template CSV", type=["csv"], key="tpl_upload_file")
+            if tpl_file is not None and tpl_name.strip():
+                if st.button("💾 Save template", use_container_width=True):
+                    parsed = load_template(csv_source=tpl_file)
+                    if parsed:
+                        if save_template_to_db(tpl_name.strip(), parsed):
+                            refresh_templates()
+                            st.success(f"Template '{tpl_name.strip()}' saved!")
+                            st.rerun()
 
 
 # ─── Main Content ───
@@ -1226,18 +1432,253 @@ if st.session_state.active_client_id:
             active = c
             break
 
-if active is None:
-    st.markdown("""
-    <div style="text-align:center; padding: 120px 20px; color: #444;">
-        <div style="font-size: 64px; margin-bottom: 16px;">🚀</div>
-        <div style="font-size: 20px; font-weight: 600; color: #888; margin-bottom: 8px;">
-            Jules Go-Live Tracker
-        </div>
-        <div style="font-size: 14px;">
-            Select a client from the sidebar or create a new one to get started.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+if st.session_state.view_mode == "manager" or active is None:
+    # ─── Manager View ───
+    clients = st.session_state.clients
+    all_stats_raw = [get_client_stats(c) for c in clients]
+    all_stats = list(zip(clients, all_stats_raw))
+
+    def _client_status(client, stats):
+        pct = stats["pct"]
+        go_live = client.get("go_live_date", "")
+        try:
+            days_left = (date.fromisoformat(go_live) - date.today()).days if go_live else 999
+        except (ValueError, TypeError):
+            days_left = 999
+        if days_left < 0:
+            return "OVERDUE"
+        if days_left <= 14 and pct < 60:
+            return "BLOCKED"
+        if days_left <= 30 and pct < 50:
+            return "AT RISK"
+        return "ON TRACK"
+
+    statuses = [_client_status(c, s) for c, s in all_stats]
+
+    n_total = len(clients)
+    n_on_track = statuses.count("ON TRACK")
+    n_at_risk = statuses.count("AT RISK")
+    n_blocked = sum(1 for s in statuses if s in ("BLOCKED", "OVERDUE"))
+    avg_pct = round(sum(s["pct"] for _, s in all_stats) / n_total) if n_total else 0
+
+    # Pre-compute compliance for the header metric
+    _compliance_rules = get_compliance_results(clients, all_stats_raw)
+    _total_pass = sum(
+        1 for rule in _compliance_rules
+        for c in clients if rule["results"].get(c["id"]) == "pass"
+    )
+    _total_applicable = sum(
+        1 for rule in _compliance_rules
+        for c in clients if rule["results"].get(c["id"]) in ("pass", "fail")
+    )
+    compliance_pct = round(_total_pass / _total_applicable * 100) if _total_applicable else 100
+
+    st.markdown("## Onboarding Command Center")
+    st.caption("Manager view — all active clients")
+    st.divider()
+
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    with col1:
+        st.metric("Active Clients", n_total)
+    with col2:
+        st.metric("On Track", n_on_track)
+    with col3:
+        st.metric("At Risk", n_at_risk)
+    with col4:
+        st.metric("Blocked", n_blocked)
+    with col5:
+        st.metric("Avg Progress", f"{avg_pct}%")
+    with col6:
+        st.metric("Protocol %", f"{compliance_pct}%")
+
+    st.divider()
+
+    if not clients:
+        st.info("No clients yet. Create one from the sidebar.")
+        st.stop()
+
+    STATUS_META = {
+        "ON TRACK": ("🟢", "#4CAF50"),
+        "AT RISK":  ("🟡", "#e8d44d"),
+        "BLOCKED":  ("🔴", "#CF6679"),
+        "OVERDUE":  ("🔴", "#CF6679"),
+    }
+
+    # ── Sub-view driven by sidebar buttons ──
+    if st.session_state.manager_sub == "clients":
+        mgr_cols = st.columns(2)
+        for i, (client, stats) in enumerate(all_stats):
+            status = statuses[i]
+            badge_emoji, badge_color = STATUS_META.get(status, ("⚪", "#888"))
+
+            go_live = client.get("go_live_date", "")
+            try:
+                go_live_dt = date.fromisoformat(go_live) if go_live else None
+                days_left = (go_live_dt - date.today()).days if go_live_dt else None
+            except (ValueError, TypeError):
+                go_live_dt = None
+                days_left = None
+
+            go_live_str = go_live_dt.strftime("%b %d, %Y") if go_live_dt else "—"
+            days_str = (
+                f"{days_left}d left" if days_left is not None and days_left >= 0
+                else (f"{abs(days_left)}d overdue" if days_left is not None else "—")
+            )
+
+            # Categories: dynamic from client data, sorted by canonical order
+            sorted_cats = sorted(
+                stats["by_category"].items(),
+                key=lambda x: CATEGORY_ORDER.index(x[0]) if x[0] in CATEGORY_ORDER else 999,
+            )
+
+            cat_rows_html = ""
+            for cat, cat_s in sorted_cats:
+                pct = cat_s["pct"]
+                done = cat_s["done"]
+                total = cat_s["total"]
+                icon = CATEGORY_ICONS.get(cat, "📋")
+                bar_color = CATEGORY_COLORS.get(cat, "#444")
+                cat_rows_html += (
+                    f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">'
+                    f'<span style="font-size:11px;color:#666;width:18px;text-align:center;">{icon}</span>'
+                    f'<span style="font-size:11px;color:#aaa;width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{cat}</span>'
+                    f'<div style="flex:1;background:#1e1e1e;border-radius:3px;height:6px;min-width:60px;">'
+                    f'<div style="width:{pct}%;background:{bar_color};height:6px;border-radius:3px;"></div>'
+                    f'</div>'
+                    f'<span style="font-size:10px;color:#aaa;width:52px;text-align:right;">{done}/{total}</span>'
+                    f'</div>'
+                )
+
+            # Process violations — orange banner
+            violations = get_process_violations(client, stats)
+            violations_banner = ""
+            if violations:
+                v_text = " &nbsp;·&nbsp; ".join(violations)
+                violations_banner = (
+                    f'<div style="background:#2a1500;padding:8px 14px;'
+                    f'border-top:1px solid #7a3800;border-bottom:1px solid #7a3800;'
+                    f'font-size:10px;color:#EA580C;font-weight:500;">'
+                    f'<span style="background:#DC2626;color:#fff;font-size:9px;font-weight:700;'
+                    f'padding:1px 7px;border-radius:10px;margin-right:8px;">{len(violations)}</span>'
+                    f'{v_text}'
+                    f'</div>'
+                )
+
+            roles = client.get("roles", {})
+            csm = roles.get("csm", "—")
+            tier = client.get("tier", "—")
+
+            card_html = (
+                f'<div style="background:#111111;border:1px solid #222;'
+                f'border-left:3px solid {badge_color};border-radius:10px;'
+                f'overflow:hidden;margin-bottom:16px;">'
+                f'<div style="padding:16px 18px;">'
+                f'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">'
+                f'<div>'
+                f'<div style="font-size:15px;font-weight:700;color:#ffffff;">{client["name"]}</div>'
+                f'<div style="font-size:11px;color:#555;margin-top:3px;">{tier} &nbsp;·&nbsp; CSM: {csm}</div>'
+                f'</div>'
+                f'<div style="text-align:right;">'
+                f'<div style="display:inline-block;background:{badge_color}22;color:{badge_color};'
+                f'font-size:10px;font-weight:700;padding:2px 10px;border-radius:20px;'
+                f'border:1px solid {badge_color}55;margin-bottom:4px;">{badge_emoji} {status}</div>'
+                f'<div style="font-size:11px;color:#555;">{go_live_str} &nbsp;·&nbsp; {days_str}</div>'
+                f'</div>'
+                f'</div>'
+                f'<div style="margin-bottom:12px;">'
+                f'<div style="display:flex;justify-content:space-between;margin-bottom:4px;">'
+                f'<span style="font-size:11px;color:#666;">Overall</span>'
+                f'<span style="font-size:11px;color:#ccc;font-weight:600;">{stats["pct"]}% &nbsp;({stats["done"]}/{stats["total"]} items)</span>'
+                f'</div>'
+                f'<div style="background:#1e1e1e;border-radius:4px;height:6px;">'
+                f'<div style="width:{stats["pct"]}%;background:#e8d44d;height:6px;border-radius:4px;"></div>'
+                f'</div>'
+                f'</div>'
+                f'</div>'
+                f'{violations_banner}'
+                f'<div style="padding:10px 18px 14px;border-top:1px solid #1a1a1a;">'
+                f'{cat_rows_html}'
+                f'</div>'
+                f'</div>'
+            )
+
+            with mgr_cols[i % 2]:
+                st.markdown(card_html, unsafe_allow_html=True)
+                if st.button(
+                    f"Open {client['name']} →",
+                    key=f"mgr_open_{client['id']}",
+                    use_container_width=True,
+                ):
+                    st.session_state.active_client_id = client["id"]
+                    st.session_state.view_mode = "client"
+                    st.rerun()
+
+    elif st.session_state.manager_sub == "compliance":
+        st.caption("Automated rule checks across all clients — Pass ✅ / Fail ❌ / N/A —")
+
+        compliance = get_compliance_results(clients, all_stats_raw)
+
+        # Build HTML table
+        client_names = [c["name"] for c in clients]
+
+        # Header row
+        header_cells = '<th style="text-align:left;padding:8px 12px;color:#888;font-size:11px;font-weight:600;border-bottom:1px solid #222;">Rule</th>'
+        for name in client_names:
+            header_cells += f'<th style="text-align:center;padding:8px 12px;color:#888;font-size:11px;font-weight:600;border-bottom:1px solid #222;">{name}</th>'
+
+        # Score row (pass count per client)
+        score_per_client = {c["id"]: 0 for c in clients}
+        total_rules = len(compliance)
+        for rule in compliance:
+            for client in clients:
+                if rule["results"].get(client["id"]) == "pass":
+                    score_per_client[client["id"]] += 1
+
+        score_cells = '<td style="padding:8px 12px;font-size:11px;color:#666;font-weight:600;">Score</td>'
+        for client in clients:
+            score = score_per_client[client["id"]]
+            score_color = "#4CAF50" if score == total_rules else "#e8d44d" if score >= total_rules // 2 else "#CF6679"
+            score_cells += f'<td style="text-align:center;padding:8px 12px;"><span style="color:{score_color};font-weight:700;font-size:13px;">{score}/{total_rules}</span></td>'
+
+        # Data rows
+        data_rows = ""
+        for rule in compliance:
+            desc = rule.get("desc", "")
+            row_cells = (
+                f'<td style="padding:8px 12px;">'
+                f'<div style="font-size:12px;color:#ccc;white-space:nowrap;">{rule["label"]}</div>'
+                f'<div style="font-size:10px;color:#555;margin-top:2px;">{desc}</div>'
+                f'</td>'
+            )
+            for client in clients:
+                result = rule["results"].get(client["id"], "na")
+                if result == "pass":
+                    cell = '<span style="color:#4CAF50;font-size:16px;">✅</span>'
+                    bg = "rgba(76,175,80,0.06)"
+                elif result == "fail":
+                    cell = '<span style="color:#CF6679;font-size:16px;">❌</span>'
+                    bg = "rgba(207,102,121,0.08)"
+                else:
+                    cell = '<span style="color:#444;font-size:13px;">—</span>'
+                    bg = "transparent"
+                row_cells += f'<td style="text-align:center;padding:8px 12px;background:{bg};">{cell}</td>'
+            data_rows += f"<tr>{row_cells}</tr>"
+
+        table_html = f"""
+        <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;background:#111;border-radius:10px;overflow:hidden;">
+            <thead>
+                <tr style="background:#0e0e0e;">{header_cells}</tr>
+            </thead>
+            <tbody>
+                {data_rows}
+                <tr style="background:#0e0e0e;border-top:1px solid #222;">{score_cells}</tr>
+            </tbody>
+        </table>
+        </div>"""
+
+        st.markdown(table_html, unsafe_allow_html=True)
+
     st.stop()
 
 
@@ -1547,12 +1988,20 @@ with tab_checklist:
                         it["start_date"] = str(start_val) if pd.notna(start_val) and start_val is not None else ""
                         it["end_date"] = str(end_val) if pd.notna(end_val) and end_val is not None else ""
                         # Checkbox overrides status
-                        if row["✓"] and it["status"] not in ("Approved", "N/A"):
+                        prev_status = it["status"]
+                        if row["✓"] and prev_status not in ("Approved", "N/A"):
                             it["status"] = "Approved"
-                        elif not row["✓"] and it["status"] in ("Approved", "N/A"):
+                            it["approved_at"] = datetime.now().isoformat()
+                        elif not row["✓"] and prev_status in ("Approved", "N/A"):
                             it["status"] = "Not started"
+                            it["approved_at"] = ""
                         else:
-                            it["status"] = row["Status"]
+                            new_status = row["Status"]
+                            it["status"] = new_status
+                            if new_status == "Approved" and prev_status != "Approved":
+                                it["approved_at"] = datetime.now().isoformat()
+                            elif new_status != "Approved":
+                                it["approved_at"] = ""
                         new_items.append(it)
                     else:
                         # New row added
