@@ -282,6 +282,7 @@ def create_client(name, tier, go_live_date, account_manager, tech_lead, template
         "name": name,
         "tier": tier,
         "go_live_date": str(go_live_date) if go_live_date else "",
+        "kickoff_date": "",
         "account_manager": account_manager,
         "tech_lead": tech_lead,
         "roles": roles or {},
@@ -604,6 +605,8 @@ def get_compliance_results(clients, all_stats):
         ("UATs complete before go-live", "All UAT items must be Approved before the go-live date."),
         ("No overdue items", "No item with an end date in the past should be pending."),
         ("On schedule", "Progress is consistent with time remaining to go-live."),
+        ("Master data within 5d of kick-off", "All Master Data items should be Approved within 5 days of the kick-off date."),
+        ("First UAT within 7d of kick-off", "First UAT should be Approved within 7 days of the kick-off date."),
     ]
 
     compliance = [{"label": lbl, "desc": desc, "results": {}} for lbl, desc in rules_meta]
@@ -618,6 +621,12 @@ def get_compliance_results(clients, all_stats):
         except (ValueError, TypeError):
             go_live_dt = None
             days_left = None
+
+        kickoff = client.get("kickoff_date", "")
+        try:
+            kickoff_dt = date.fromisoformat(kickoff) if kickoff else None
+        except (ValueError, TypeError):
+            kickoff_dt = None
 
         sops = checklist.get("SOPs", [])
         uats = checklist.get("UATs", [])
@@ -726,6 +735,30 @@ def get_compliance_results(clients, all_stats):
             compliance[5]["results"][cid] = "fail"
         else:
             compliance[5]["results"][cid] = "pass"
+
+        # ── Rule 6: Master data within 5d of kick-off ──
+        md_items = checklist.get("Master Data", []) + checklist.get("Master Data Setup", [])
+        if kickoff_dt is None or not md_items:
+            compliance[6]["results"][cid] = "na"
+        else:
+            last_md_ts = _last_approved_at(md_items)
+            if last_md_ts is None:
+                md_pct_val = stats["by_category"].get("Master Data", {}).get("pct", 0)
+                compliance[6]["results"][cid] = "na" if md_pct_val < 100 else "pass"
+            else:
+                deadline = kickoff_dt + timedelta(days=5)
+                compliance[6]["results"][cid] = "pass" if last_md_ts.date() <= deadline else "fail"
+
+        # ── Rule 7: First UAT within 7d of kick-off ──
+        if kickoff_dt is None or not uats:
+            compliance[7]["results"][cid] = "na"
+        else:
+            first_uat_ts = _first_approved_at(uats)
+            if first_uat_ts is None:
+                compliance[7]["results"][cid] = "na"
+            else:
+                deadline = kickoff_dt + timedelta(days=7)
+                compliance[7]["results"][cid] = "pass" if first_uat_ts.date() <= deadline else "fail"
 
     return compliance
 
@@ -1219,10 +1252,12 @@ with st.sidebar:
         # ── New Client ──
         with st.expander("➕ **New Client**", expanded=False):
             new_name = st.text_input("Client name", key="new_name")
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 new_tier = st.selectbox("Tier", TIERS, key="new_tier")
             with col2:
+                new_kickoff = st.date_input("Kick-off date", value=None, key="new_kickoff")
+            with col3:
                 new_date = st.date_input("Go-Live date", value=None, key="new_date")
             # ── Role Assignments ──
             st.markdown("**Team Roles**")
@@ -1301,6 +1336,7 @@ with st.sidebar:
                                 roles.get("csm", ""), roles.get("cs_config", ""), tpl,
                                 roles=roles, template_id=tpl_id,
                             )
+                            client["kickoff_date"] = str(new_kickoff) if new_kickoff else ""
                             save_client(client)
                             refresh_clients()
                             st.session_state.active_client_id = client["id"]
@@ -1737,13 +1773,23 @@ if st.session_state.get("confirm_delete"):
 
 # ── Client Info ──
 with st.expander("📝 **Client Info**", expanded=False):
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         new_val = st.selectbox("Tier", TIERS, index=TIERS.index(active.get("tier", "Tier 1")), key="edit_tier")
         if new_val != active.get("tier"):
             active["tier"] = new_val
             save_client(active)
     with col2:
+        kickoff = active.get("kickoff_date", "")
+        try:
+            default_kickoff = date.fromisoformat(kickoff) if kickoff else None
+        except ValueError:
+            default_kickoff = None
+        new_kickoff_val = st.date_input("Kick-off Date", value=default_kickoff, key="edit_kickoff")
+        if str(new_kickoff_val) != kickoff:
+            active["kickoff_date"] = str(new_kickoff_val) if new_kickoff_val else ""
+            save_client(active)
+    with col3:
         go_live = active.get("go_live_date", "")
         try:
             default_date = date.fromisoformat(go_live) if go_live else None
