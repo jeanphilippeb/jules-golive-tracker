@@ -918,7 +918,7 @@ def create_timeline_chart(client, selected_categories=None):
             x1=row["Finish"],
             y0=y_bottom,
             y1=y_top,
-            fillcolor=category_colors.get(row["Category"], "#95A5A6"),
+            fillcolor=CATEGORY_COLORS.get(row["Category"], "#95A5A6"),
             line=dict(color='rgba(255,255,255,0.6)', width=2),
             layer="below",
         )
