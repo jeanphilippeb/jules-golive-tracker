@@ -2007,8 +2007,10 @@ with tab_checklist:
                             return val.isoformat()
                         return str(val)
 
-                    # Compare each field
-                    if (original["item"] != str(row["Item"]) or
+                    # Compare each field (including ✓ checkbox which maps to Approved status)
+                    original_checked = original["status"] in ("Approved", "N/A")
+                    if (bool(row["✓"]) != original_checked or
+                        original["item"] != str(row["Item"]) or
                         original["points"] != float(row["Points"]) or
                         original.get("assignee", "") != str(row["Assignee"] if pd.notna(row["Assignee"]) else "") or
                         original.get("notes", "") != str(row["Notes"] if pd.notna(row["Notes"]) else "") or
