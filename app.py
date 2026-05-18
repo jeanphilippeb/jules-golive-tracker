@@ -1338,9 +1338,11 @@ with st.sidebar:
                                 roles=roles, template_id=tpl_id,
                             )
                             client["kickoff_date"] = str(new_kickoff) if new_kickoff else ""
-                            save_client(client)
-                            refresh_clients()
+                            with st.spinner("Creating client…"):
+                                save_client(client)
+                                refresh_clients()
                             st.session_state.active_client_id = client["id"]
+                            st.toast(f"✅ {new_name.strip()} created!", icon="🚀")
                             st.rerun()
                         else:
                             st.error("No valid template loaded.")
@@ -1831,18 +1833,19 @@ with st.expander("📝 **Client Info**", expanded=False):
         tpl = st.session_state.get("template") or load_template()
         if tpl:
             updated, added_cats, added_items = sync_template_categories(active, tpl)
-            save_client(updated)
-            refresh_clients()
+            with st.spinner("Syncing…"):
+                save_client(updated)
+                refresh_clients()
             total_added = len(added_cats) + len(added_items)
             if total_added == 0:
-                st.success("✅ Already up to date — nothing to add.")
+                st.toast("Already up to date — nothing to add.", icon="✅")
             else:
                 msg_parts = []
                 if added_cats:
-                    msg_parts.append(f"**{len(added_cats)} new categories:** {', '.join(added_cats)}")
+                    msg_parts.append(f"{len(added_cats)} new categories")
                 if added_items:
-                    msg_parts.append(f"**{len(added_items)} new items** in existing categories")
-                st.success("✅ Synced! " + " · ".join(msg_parts))
+                    msg_parts.append(f"{len(added_items)} new items")
+                st.toast("Synced! " + " · ".join(msg_parts), icon="🔄")
             st.rerun()
         else:
             st.error("Could not load template.")
@@ -1976,6 +1979,7 @@ with tab_checklist:
                     "End Date": end_val,
                     "Points": it["points"],
                     "Notes": it.get("notes", ""),
+                    "Select": False,
                     "_id": it["id"],
                 })
 
@@ -1987,8 +1991,8 @@ with tab_checklist:
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "Select": st.column_config.CheckboxColumn("", width="small"),
-                    "✓": st.column_config.CheckboxColumn("✓", width="small"),
+                    "✓": st.column_config.CheckboxColumn("Mark as done", width="small"),
+                    "Select": st.column_config.CheckboxColumn("☑", width="small", help="Select rows for bulk actions (status, dates, delete)"),
                     "Item": st.column_config.TextColumn("Item", width="large"),
                     "Status": st.column_config.SelectboxColumn(
                         "Status", options=STATUSES, width="medium",
@@ -2020,10 +2024,31 @@ with tab_checklist:
                     apply_bulk = st.button("✓ Apply", key=f"bulk_apply_{cat}_{active['id']}", use_container_width=True)
                 with ba_col3:
                     delete_bulk = st.button("🗑 Delete", key=f"bulk_delete_{cat}_{active['id']}", use_container_width=True)
+
+                bd_col1, bd_col2, bd_col3 = st.columns([2, 2, 1])
+                with bd_col1:
+                    bulk_start = st.date_input(
+                        "Start date",
+                        value=None,
+                        key=f"bulk_start_{cat}_{active['id']}",
+                        label_visibility="collapsed",
+                    )
+                with bd_col2:
+                    bulk_end = st.date_input(
+                        "End date",
+                        value=None,
+                        key=f"bulk_end_{cat}_{active['id']}",
+                        label_visibility="collapsed",
+                    )
+                with bd_col3:
+                    apply_bulk_dates = st.button("📅 Dates", key=f"bulk_dates_{cat}_{active['id']}", use_container_width=True)
             else:
                 apply_bulk = False
                 delete_bulk = False
                 bulk_status = None
+                apply_bulk_dates = False
+                bulk_start = None
+                bulk_end = None
 
             # Check if data actually changed by comparing with original filtered items
             has_changes = False
@@ -2055,7 +2080,7 @@ with tab_checklist:
                         break
 
             # Bulk actions bypass normal change detection and always auto-save
-            if apply_bulk or delete_bulk:
+            if apply_bulk or delete_bulk or apply_bulk_dates:
                 has_changes = True
                 any_bulk_action = True
 
@@ -2076,6 +2101,12 @@ with tab_checklist:
                         # Sync start_date and end_date (always YYYY-MM-DD)
                         it["start_date"] = date_to_str(row.get("Start Date"))
                         it["end_date"] = date_to_str(row.get("End Date"))
+                        # Bulk date apply: override start/end for selected rows
+                        if apply_bulk_dates and is_selected:
+                            if bulk_start:
+                                it["start_date"] = date_to_str(bulk_start)
+                            if bulk_end:
+                                it["end_date"] = date_to_str(bulk_end)
                         # Bulk apply overrides everything else for selected rows
                         prev_status = it["status"]
                         if apply_bulk and is_selected:
@@ -2143,9 +2174,11 @@ with tab_checklist:
 
     # Bulk actions (Apply / Delete selected) auto-save immediately
     if any_bulk_action:
-        save_client(active)
-        refresh_clients()
+        with st.spinner("Saving…"):
+            save_client(active)
+            refresh_clients()
         st.session_state[unsaved_key] = False
+        st.toast("Saved!", icon="✅")
         st.rerun()
 
     # Inline edits accumulate in memory — show Save button
@@ -2158,9 +2191,11 @@ with tab_checklist:
             st.info("You have unsaved changes in the checklist.")
         with save_col2:
             if st.button("💾 Save", type="primary", key="checklist_save_btn", use_container_width=True):
-                save_client(active)
-                refresh_clients()
+                with st.spinner("Saving…"):
+                    save_client(active)
+                    refresh_clients()
                 st.session_state[unsaved_key] = False
+                st.toast("Saved!", icon="✅")
                 st.rerun()
 
 with tab_ext:
