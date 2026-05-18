@@ -2012,40 +2012,47 @@ with tab_checklist:
             n_selected = int(edited_df["Select"].sum()) if "Select" in edited_df.columns else 0
             if n_selected > 0:
                 st.caption(f"{n_selected} item(s) selected")
-                ba_col1, ba_col2, ba_col3 = st.columns([3, 1, 1])
-                with ba_col1:
+                bc1, bc2, bc3, bc4, bc5, bc6 = st.columns([2, 2, 2, 2, 1, 1])
+                with bc1:
                     bulk_status = st.selectbox(
-                        "Set selected to:",
+                        "Status",
                         STATUSES,
                         key=f"bulk_status_{cat}_{active['id']}",
                         label_visibility="collapsed",
                     )
-                with ba_col2:
-                    apply_bulk = st.button("✓ Apply", key=f"bulk_apply_{cat}_{active['id']}", use_container_width=True)
-                with ba_col3:
-                    delete_bulk = st.button("🗑 Delete", key=f"bulk_delete_{cat}_{active['id']}", use_container_width=True)
-
-                bd_col1, bd_col2, bd_col3 = st.columns([2, 2, 1])
-                with bd_col1:
+                with bc2:
+                    bulk_assignee = st.selectbox(
+                        "Assignee",
+                        ["(no change)"] + all_assignees,
+                        key=f"bulk_assignee_{cat}_{active['id']}",
+                        label_visibility="collapsed",
+                    )
+                with bc3:
                     bulk_start = st.date_input(
-                        "Start date",
+                        "Start",
                         value=None,
                         key=f"bulk_start_{cat}_{active['id']}",
                         label_visibility="collapsed",
+                        format="YYYY-MM-DD",
                     )
-                with bd_col2:
+                with bc4:
                     bulk_end = st.date_input(
-                        "End date",
+                        "End",
                         value=None,
                         key=f"bulk_end_{cat}_{active['id']}",
                         label_visibility="collapsed",
+                        format="YYYY-MM-DD",
                     )
-                with bd_col3:
-                    apply_bulk_dates = st.button("📅 Dates", key=f"bulk_dates_{cat}_{active['id']}", use_container_width=True)
+                with bc5:
+                    apply_bulk = st.button(f"✓ Apply ({n_selected})", key=f"bulk_apply_{cat}_{active['id']}", use_container_width=True, type="primary")
+                with bc6:
+                    delete_bulk = st.button(f"🗑 Delete ({n_selected})", key=f"bulk_delete_{cat}_{active['id']}", use_container_width=True)
+                apply_bulk_dates = apply_bulk
             else:
                 apply_bulk = False
                 delete_bulk = False
                 bulk_status = None
+                bulk_assignee = "(no change)"
                 apply_bulk_dates = False
                 bulk_start = None
                 bulk_end = None
@@ -2101,13 +2108,15 @@ with tab_checklist:
                         # Sync start_date and end_date (always YYYY-MM-DD)
                         it["start_date"] = date_to_str(row.get("Start Date"))
                         it["end_date"] = date_to_str(row.get("End Date"))
-                        # Bulk date apply: override start/end for selected rows
-                        if apply_bulk_dates and is_selected:
+                        # Bulk apply: override dates and assignee for selected rows
+                        if apply_bulk and is_selected:
                             if bulk_start:
                                 it["start_date"] = date_to_str(bulk_start)
                             if bulk_end:
                                 it["end_date"] = date_to_str(bulk_end)
-                        # Bulk apply overrides everything else for selected rows
+                            if bulk_assignee and bulk_assignee != "(no change)":
+                                it["assignee"] = bulk_assignee
+                        # Bulk apply overrides status for selected rows
                         prev_status = it["status"]
                         if apply_bulk and is_selected:
                             it["status"] = bulk_status
