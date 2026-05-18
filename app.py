@@ -1338,9 +1338,11 @@ with st.sidebar:
                                 roles=roles, template_id=tpl_id,
                             )
                             client["kickoff_date"] = str(new_kickoff) if new_kickoff else ""
-                            save_client(client)
-                            refresh_clients()
+                            with st.spinner("Creating client…"):
+                                save_client(client)
+                                refresh_clients()
                             st.session_state.active_client_id = client["id"]
+                            st.toast(f"✅ {new_name.strip()} created!", icon="🚀")
                             st.rerun()
                         else:
                             st.error("No valid template loaded.")
@@ -1831,18 +1833,19 @@ with st.expander("📝 **Client Info**", expanded=False):
         tpl = st.session_state.get("template") or load_template()
         if tpl:
             updated, added_cats, added_items = sync_template_categories(active, tpl)
-            save_client(updated)
-            refresh_clients()
+            with st.spinner("Syncing…"):
+                save_client(updated)
+                refresh_clients()
             total_added = len(added_cats) + len(added_items)
             if total_added == 0:
-                st.success("✅ Already up to date — nothing to add.")
+                st.toast("Already up to date — nothing to add.", icon="✅")
             else:
                 msg_parts = []
                 if added_cats:
-                    msg_parts.append(f"**{len(added_cats)} new categories:** {', '.join(added_cats)}")
+                    msg_parts.append(f"{len(added_cats)} new categories")
                 if added_items:
-                    msg_parts.append(f"**{len(added_items)} new items** in existing categories")
-                st.success("✅ Synced! " + " · ".join(msg_parts))
+                    msg_parts.append(f"{len(added_items)} new items")
+                st.toast("Synced! " + " · ".join(msg_parts), icon="🔄")
             st.rerun()
         else:
             st.error("Could not load template.")
@@ -2170,9 +2173,11 @@ with tab_checklist:
 
     # Bulk actions (Apply / Delete selected) auto-save immediately
     if any_bulk_action:
-        save_client(active)
-        refresh_clients()
+        with st.spinner("Saving…"):
+            save_client(active)
+            refresh_clients()
         st.session_state[unsaved_key] = False
+        st.toast("Saved!", icon="✅")
         st.rerun()
 
     # Inline edits accumulate in memory — show Save button
@@ -2185,9 +2190,11 @@ with tab_checklist:
             st.info("You have unsaved changes in the checklist.")
         with save_col2:
             if st.button("💾 Save", type="primary", key="checklist_save_btn", use_container_width=True):
-                save_client(active)
-                refresh_clients()
+                with st.spinner("Saving…"):
+                    save_client(active)
+                    refresh_clients()
                 st.session_state[unsaved_key] = False
+                st.toast("Saved!", icon="✅")
                 st.rerun()
 
 with tab_ext:
