@@ -2018,21 +2018,18 @@ with tab_checklist:
                         "Status",
                         STATUSES,
                         key=f"bulk_status_{cat}_{active['id']}",
-                        label_visibility="collapsed",
                     )
                 with bc2:
                     bulk_assignee = st.selectbox(
                         "Assignee",
                         ["(no change)"] + all_assignees,
                         key=f"bulk_assignee_{cat}_{active['id']}",
-                        label_visibility="collapsed",
                     )
                 with bc3:
                     bulk_start = st.date_input(
                         "Start",
                         value=None,
                         key=f"bulk_start_{cat}_{active['id']}",
-                        label_visibility="collapsed",
                         format="YYYY-MM-DD",
                     )
                 with bc4:
@@ -2040,13 +2037,14 @@ with tab_checklist:
                         "End",
                         value=None,
                         key=f"bulk_end_{cat}_{active['id']}",
-                        label_visibility="collapsed",
                         format="YYYY-MM-DD",
                     )
                 with bc5:
-                    apply_bulk = st.button(f"✓ Apply ({n_selected})", key=f"bulk_apply_{cat}_{active['id']}", use_container_width=True, type="primary")
+                    st.caption("Action")
+                    apply_bulk = st.button(f"Apply ({n_selected})", key=f"bulk_apply_{cat}_{active['id']}", use_container_width=True, type="primary")
                 with bc6:
-                    delete_bulk = st.button(f"🗑 Delete ({n_selected})", key=f"bulk_delete_{cat}_{active['id']}", use_container_width=True)
+                    st.caption("Action")
+                    delete_bulk = st.button(f"Delete ({n_selected})", key=f"bulk_delete_{cat}_{active['id']}", use_container_width=True)
                 apply_bulk_dates = apply_bulk
             else:
                 apply_bulk = False
