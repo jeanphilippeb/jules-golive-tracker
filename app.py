@@ -2020,10 +2020,31 @@ with tab_checklist:
                     apply_bulk = st.button("✓ Apply", key=f"bulk_apply_{cat}_{active['id']}", use_container_width=True)
                 with ba_col3:
                     delete_bulk = st.button("🗑 Delete", key=f"bulk_delete_{cat}_{active['id']}", use_container_width=True)
+
+                bd_col1, bd_col2, bd_col3 = st.columns([2, 2, 1])
+                with bd_col1:
+                    bulk_start = st.date_input(
+                        "Start date",
+                        value=None,
+                        key=f"bulk_start_{cat}_{active['id']}",
+                        label_visibility="collapsed",
+                    )
+                with bd_col2:
+                    bulk_end = st.date_input(
+                        "End date",
+                        value=None,
+                        key=f"bulk_end_{cat}_{active['id']}",
+                        label_visibility="collapsed",
+                    )
+                with bd_col3:
+                    apply_bulk_dates = st.button("📅 Dates", key=f"bulk_dates_{cat}_{active['id']}", use_container_width=True)
             else:
                 apply_bulk = False
                 delete_bulk = False
                 bulk_status = None
+                apply_bulk_dates = False
+                bulk_start = None
+                bulk_end = None
 
             # Check if data actually changed by comparing with original filtered items
             has_changes = False
@@ -2055,7 +2076,7 @@ with tab_checklist:
                         break
 
             # Bulk actions bypass normal change detection and always auto-save
-            if apply_bulk or delete_bulk:
+            if apply_bulk or delete_bulk or apply_bulk_dates:
                 has_changes = True
                 any_bulk_action = True
 
@@ -2076,6 +2097,12 @@ with tab_checklist:
                         # Sync start_date and end_date (always YYYY-MM-DD)
                         it["start_date"] = date_to_str(row.get("Start Date"))
                         it["end_date"] = date_to_str(row.get("End Date"))
+                        # Bulk date apply: override start/end for selected rows
+                        if apply_bulk_dates and is_selected:
+                            if bulk_start:
+                                it["start_date"] = date_to_str(bulk_start)
+                            if bulk_end:
+                                it["end_date"] = date_to_str(bulk_end)
                         # Bulk apply overrides everything else for selected rows
                         prev_status = it["status"]
                         if apply_bulk and is_selected:
