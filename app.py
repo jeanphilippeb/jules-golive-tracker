@@ -1991,7 +1991,7 @@ with tab_checklist:
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "✓": st.column_config.CheckboxColumn("Mark as done", width="small"),
+                    "✓": st.column_config.CheckboxColumn("Done?", width="small"),
                     "Select": st.column_config.CheckboxColumn("☑", width="small", help="Select rows for bulk actions (status, dates, delete)"),
                     "Item": st.column_config.TextColumn("Item", width="large"),
                     "Status": st.column_config.SelectboxColumn(
