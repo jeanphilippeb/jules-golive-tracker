@@ -1928,6 +1928,8 @@ with tab_checklist:
         return str(val)[:10]
 
     data_changed = False
+    any_bulk_action = False
+    unsaved_key = f"_unsaved_{active['id']}"
 
     for cat, items in active["checklist"].items():
         # Filter items
@@ -2052,9 +2054,10 @@ with tab_checklist:
                         has_changes = True
                         break
 
-            # Bulk actions bypass normal change detection
+            # Bulk actions bypass normal change detection and always auto-save
             if apply_bulk or delete_bulk:
                 has_changes = True
+                any_bulk_action = True
 
             if has_changes:
                 new_items = []
@@ -2138,10 +2141,27 @@ with tab_checklist:
 
                 data_changed = True
 
-    # Auto-save on any change
-    if data_changed:
+    # Bulk actions (Apply / Delete selected) auto-save immediately
+    if any_bulk_action:
         save_client(active)
         refresh_clients()
+        st.session_state[unsaved_key] = False
+        st.rerun()
+
+    # Inline edits accumulate in memory — show Save button
+    if data_changed:
+        st.session_state[unsaved_key] = True
+
+    if st.session_state.get(unsaved_key):
+        save_col1, save_col2 = st.columns([5, 1])
+        with save_col1:
+            st.info("You have unsaved changes in the checklist.")
+        with save_col2:
+            if st.button("💾 Save", type="primary", key="checklist_save_btn", use_container_width=True):
+                save_client(active)
+                refresh_clients()
+                st.session_state[unsaved_key] = False
+                st.rerun()
 
 with tab_ext:
     st.markdown("### 📅 Timeline (External)")
