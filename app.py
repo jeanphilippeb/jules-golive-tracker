@@ -217,9 +217,10 @@ def load_template(csv_source=None):
         start_offset = row.get("start_offset_days", "")
         end_offset = row.get("end_offset_days", "")
 
+        raw_pts = row.get("points")
         template[cat].append({
             "item": str(row["item"]).strip(),
-            "points": float(row.get("points", 1)),
+            "points": float(raw_pts) if pd.notna(raw_pts) and raw_pts != "" else 1.0,
             "default_assignee": default_assignee,
             "default_role": default_role,
             "start_offset_days": int(start_offset) if pd.notna(start_offset) and start_offset != "" else None,
@@ -1909,6 +1910,23 @@ with tab_checklist:
     # Collect all assignee options for SelectboxColumn
     all_assignees = get_all_assignees(active)
 
+    def date_to_str(val):
+        """Normalise any date value to YYYY-MM-DD string (or empty string)."""
+        if val is None:
+            return ""
+        try:
+            if pd.isna(val):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        if isinstance(val, str):
+            return val[:10]
+        if hasattr(val, "date") and callable(val.date):
+            return val.date().isoformat()
+        if hasattr(val, "isoformat"):
+            return val.isoformat()[:10]
+        return str(val)[:10]
+
     data_changed = False
 
     for cat, items in active["checklist"].items():
@@ -1947,6 +1965,7 @@ with tab_checklist:
                     end_val = None
 
                 df_data.append({
+                    "Select": False,
                     "✓": it["status"] in ("Approved", "N/A"),
                     "Item": it["item"],
                     "Status": it["status"],
@@ -1966,6 +1985,7 @@ with tab_checklist:
                 use_container_width=True,
                 hide_index=True,
                 column_config={
+                    "Select": st.column_config.CheckboxColumn("", width="small"),
                     "✓": st.column_config.CheckboxColumn("✓", width="small"),
                     "Item": st.column_config.TextColumn("Item", width="large"),
                     "Status": st.column_config.SelectboxColumn(
@@ -1982,6 +2002,27 @@ with tab_checklist:
                 num_rows="dynamic",  # Allows adding/deleting rows
             )
 
+            # Bulk action bar (shown when at least one row is selected)
+            n_selected = int(edited_df["Select"].sum()) if "Select" in edited_df.columns else 0
+            if n_selected > 0:
+                st.caption(f"{n_selected} item(s) selected")
+                ba_col1, ba_col2, ba_col3 = st.columns([3, 1, 1])
+                with ba_col1:
+                    bulk_status = st.selectbox(
+                        "Set selected to:",
+                        STATUSES,
+                        key=f"bulk_status_{cat}_{active['id']}",
+                        label_visibility="collapsed",
+                    )
+                with ba_col2:
+                    apply_bulk = st.button("✓ Apply", key=f"bulk_apply_{cat}_{active['id']}", use_container_width=True)
+                with ba_col3:
+                    delete_bulk = st.button("🗑 Delete", key=f"bulk_delete_{cat}_{active['id']}", use_container_width=True)
+            else:
+                apply_bulk = False
+                delete_bulk = False
+                bulk_status = None
+
             # Check if data actually changed by comparing with original filtered items
             has_changes = False
 
@@ -1997,54 +2038,54 @@ with tab_checklist:
 
                     original = filtered[idx]
 
-                    # Helper to normalize dates for comparison
-                    def date_to_str(val):
-                        if pd.isna(val) or val is None:
-                            return ""
-                        if isinstance(val, str):
-                            return val
-                        if hasattr(val, 'isoformat'):
-                            return val.isoformat()
-                        return str(val)
-
                     # Compare each field (including ✓ checkbox which maps to Approved status)
                     original_checked = original["status"] in ("Approved", "N/A")
+                    row_status = str(row["Status"]) if pd.notna(row["Status"]) else original["status"]
                     if (bool(row["✓"]) != original_checked or
                         original["item"] != str(row["Item"]) or
                         original["points"] != float(row["Points"]) or
                         original.get("assignee", "") != str(row["Assignee"] if pd.notna(row["Assignee"]) else "") or
                         original.get("notes", "") != str(row["Notes"] if pd.notna(row["Notes"]) else "") or
-                        original["status"] != str(row["Status"]) or
-                        original.get("start_date", "") != date_to_str(row.get("Start Date")) or
-                        original.get("end_date", "") != date_to_str(row.get("End Date"))):
+                        original["status"] != row_status or
+                        date_to_str(original.get("start_date", "")) != date_to_str(row.get("Start Date")) or
+                        date_to_str(original.get("end_date", "")) != date_to_str(row.get("End Date"))):
                         has_changes = True
                         break
+
+            # Bulk actions bypass normal change detection
+            if apply_bulk or delete_bulk:
+                has_changes = True
 
             if has_changes:
                 new_items = []
                 for idx, row in edited_df.iterrows():
+                    is_selected = bool(row.get("Select", False))
                     if idx < len(filtered):
+                        # Bulk delete: skip selected rows
+                        if delete_bulk and is_selected:
+                            continue
                         # Existing item
                         it = filtered[idx].copy()
                         it["item"] = row["Item"]
                         it["points"] = row["Points"]
                         it["assignee"] = row["Assignee"] if pd.notna(row["Assignee"]) else ""
                         it["notes"] = row["Notes"] if pd.notna(row["Notes"]) else ""
-                        # Sync start_date and end_date
-                        start_val = row.get("Start Date")
-                        end_val = row.get("End Date")
-                        it["start_date"] = str(start_val) if pd.notna(start_val) and start_val is not None else ""
-                        it["end_date"] = str(end_val) if pd.notna(end_val) and end_val is not None else ""
-                        # Checkbox overrides status
+                        # Sync start_date and end_date (always YYYY-MM-DD)
+                        it["start_date"] = date_to_str(row.get("Start Date"))
+                        it["end_date"] = date_to_str(row.get("End Date"))
+                        # Bulk apply overrides everything else for selected rows
                         prev_status = it["status"]
-                        if row["✓"] and prev_status not in ("Approved", "N/A"):
+                        if apply_bulk and is_selected:
+                            it["status"] = bulk_status
+                            it["approved_at"] = datetime.now().isoformat() if bulk_status == "Approved" else ""
+                        elif row["✓"] and prev_status not in ("Approved", "N/A"):
                             it["status"] = "Approved"
                             it["approved_at"] = datetime.now().isoformat()
                         elif not row["✓"] and prev_status in ("Approved", "N/A"):
                             it["status"] = "Not started"
                             it["approved_at"] = ""
                         else:
-                            new_status = row["Status"]
+                            new_status = str(row["Status"]) if pd.notna(row["Status"]) else prev_status
                             it["status"] = new_status
                             if new_status == "Approved" and prev_status != "Approved":
                                 it["approved_at"] = datetime.now().isoformat()
@@ -2053,16 +2094,14 @@ with tab_checklist:
                         new_items.append(it)
                     else:
                         # New row added
-                        start_val = row.get("Start Date")
-                        end_val = row.get("End Date")
                         new_items.append({
                             "id": str(uuid.uuid4())[:8],
                             "item": row["Item"] if pd.notna(row["Item"]) else "New item",
-                            "points": row["Points"] if pd.notna(row["Points"]) else 1,
-                            "status": row["Status"] if pd.notna(row["Status"]) else "Not started",
+                            "points": float(row["Points"]) if pd.notna(row["Points"]) else 1.0,
+                            "status": str(row["Status"]) if pd.notna(row["Status"]) else "Not started",
                             "assignee": row["Assignee"] if pd.notna(row["Assignee"]) else "",
-                            "start_date": str(start_val) if pd.notna(start_val) and start_val is not None else "",
-                            "end_date": str(end_val) if pd.notna(end_val) and end_val is not None else "",
+                            "start_date": date_to_str(row.get("Start Date")),
+                            "end_date": date_to_str(row.get("End Date")),
                             "notes": row["Notes"] if pd.notna(row["Notes"]) else "",
                         })
 
