@@ -1970,6 +1970,7 @@ with tab_checklist:
                     end_val = None
 
                 df_data.append({
+                    "Select": False,
                     "✓": it["status"] in ("Approved", "N/A"),
                     "Item": it["item"],
                     "Status": it["status"],
