@@ -1970,7 +1970,6 @@ with tab_checklist:
                     end_val = None
 
                 df_data.append({
-                    "Select": False,
                     "✓": it["status"] in ("Approved", "N/A"),
                     "Item": it["item"],
                     "Status": it["status"],
@@ -1979,6 +1978,7 @@ with tab_checklist:
                     "End Date": end_val,
                     "Points": it["points"],
                     "Notes": it.get("notes", ""),
+                    "Select": False,
                     "_id": it["id"],
                 })
 
@@ -1990,8 +1990,8 @@ with tab_checklist:
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "Select": st.column_config.CheckboxColumn("", width="small"),
                     "✓": st.column_config.CheckboxColumn("✓", width="small"),
+                    "Select": st.column_config.CheckboxColumn("☑", width="small", help="Select rows for bulk actions (status, dates, delete)"),
                     "Item": st.column_config.TextColumn("Item", width="large"),
                     "Status": st.column_config.SelectboxColumn(
                         "Status", options=STATUSES, width="medium",
