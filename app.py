@@ -1253,12 +1253,14 @@ with st.sidebar:
         # ── New Client ──
         with st.expander("➕ **New Client**", expanded=False):
             new_name = st.text_input("Client name", key="new_name")
-            col1, col2, col3 = st.columns(3)
-            with col1:
+            tier_col, _ = st.columns([1, 3])
+            with tier_col:
                 new_tier = st.selectbox("Tier", TIERS, key="new_tier")
-            with col2:
+            kickoff_col, _ = st.columns([1, 3])
+            with kickoff_col:
                 new_kickoff = st.date_input("Kick-off date", value=None, key="new_kickoff")
-            with col3:
+            golive_col, _ = st.columns([1, 3])
+            with golive_col:
                 new_date = st.date_input("Go-Live date", value=None, key="new_date")
             # ── Role Assignments ──
             st.markdown("**Team Roles**")
