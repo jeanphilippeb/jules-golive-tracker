@@ -1253,15 +1253,9 @@ with st.sidebar:
         # ── New Client ──
         with st.expander("➕ **New Client**", expanded=False):
             new_name = st.text_input("Client name", key="new_name")
-            tier_col, _ = st.columns([1, 3])
-            with tier_col:
-                new_tier = st.selectbox("Tier", TIERS, key="new_tier")
-            kickoff_col, _ = st.columns([1, 3])
-            with kickoff_col:
-                new_kickoff = st.date_input("Kick-off date", value=None, key="new_kickoff")
-            golive_col, _ = st.columns([1, 3])
-            with golive_col:
-                new_date = st.date_input("Go-Live date", value=None, key="new_date")
+            new_tier = st.selectbox("Tier", TIERS, key="new_tier")
+            new_kickoff = st.date_input("Kick-off date", value=None, key="new_kickoff")
+            new_date = st.date_input("Go-Live date", value=None, key="new_date")
             # ── Role Assignments ──
             st.markdown("**Team Roles**")
             role_selections = {}
@@ -1778,36 +1772,30 @@ if st.session_state.get("confirm_delete"):
 
 # ── Client Info ──
 with st.expander("📝 **Client Info**", expanded=False):
-    tier_col, _ = st.columns([1, 3])
-    with tier_col:
-        new_val = st.selectbox("Tier", TIERS, index=TIERS.index(active.get("tier", "Tier 1")), key="edit_tier")
-        if new_val != active.get("tier"):
-            active["tier"] = new_val
-            save_client(active)
+    new_val = st.selectbox("Tier", TIERS, index=TIERS.index(active.get("tier", "Tier 1")), key="edit_tier")
+    if new_val != active.get("tier"):
+        active["tier"] = new_val
+        save_client(active)
 
-    kickoff_col, _ = st.columns([1, 3])
-    with kickoff_col:
-        kickoff = active.get("kickoff_date", "")
-        try:
-            default_kickoff = date.fromisoformat(kickoff) if kickoff else None
-        except ValueError:
-            default_kickoff = None
-        new_kickoff_val = st.date_input("Kick-off Date", value=default_kickoff, key="edit_kickoff")
-        if str(new_kickoff_val) != kickoff:
-            active["kickoff_date"] = str(new_kickoff_val) if new_kickoff_val else ""
-            save_client(active)
+    kickoff = active.get("kickoff_date", "")
+    try:
+        default_kickoff = date.fromisoformat(kickoff) if kickoff else None
+    except ValueError:
+        default_kickoff = None
+    new_kickoff_val = st.date_input("Kick-off Date", value=default_kickoff, key="edit_kickoff")
+    if str(new_kickoff_val) != kickoff:
+        active["kickoff_date"] = str(new_kickoff_val) if new_kickoff_val else ""
+        save_client(active)
 
-    golive_col, _ = st.columns([1, 3])
-    with golive_col:
-        go_live = active.get("go_live_date", "")
-        try:
-            default_date = date.fromisoformat(go_live) if go_live else None
-        except ValueError:
-            default_date = None
-        new_val = st.date_input("Go-Live Date", value=default_date, key="edit_date")
-        if str(new_val) != go_live:
-            active["go_live_date"] = str(new_val) if new_val else ""
-            save_client(active)
+    go_live = active.get("go_live_date", "")
+    try:
+        default_date = date.fromisoformat(go_live) if go_live else None
+    except ValueError:
+        default_date = None
+    new_val = st.date_input("Go-Live Date", value=default_date, key="edit_date")
+    if str(new_val) != go_live:
+        active["go_live_date"] = str(new_val) if new_val else ""
+        save_client(active)
 
     # ── Role Assignments for this client ──
     st.markdown("**Team Roles**")
