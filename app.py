@@ -1307,8 +1307,10 @@ with st.sidebar:
                         # Save any new team members first
                         for member_name, member_role in new_members_to_save:
                             save_team_member(member_name, member_role)
-                        if new_members_to_save:
-                            refresh_team()
+                            if member_role not in st.session_state.team_members:
+                                st.session_state.team_members[member_role] = []
+                            if member_name not in st.session_state.team_members[member_role]:
+                                st.session_state.team_members[member_role].append(member_name)
 
                         # Resolve template
                         tpl = None
@@ -1816,7 +1818,10 @@ with st.expander("📝 **Client Info**", expanded=False):
                 new_name = st.text_input("Name", key=f"new_team_{role}", placeholder=f"New {label} name", label_visibility="collapsed")
                 if st.button("Add", key=f"add_team_{role}", use_container_width=True) and new_name.strip():
                     save_team_member(new_name.strip(), role)
-                    refresh_team()
+                    if role not in st.session_state.team_members:
+                        st.session_state.team_members[role] = []
+                    if new_name.strip() not in st.session_state.team_members[role]:
+                        st.session_state.team_members[role].append(new_name.strip())
                     if "roles" not in active:
                         active["roles"] = {}
                     active["roles"][role] = new_name.strip()
