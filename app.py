@@ -286,6 +286,8 @@ def create_client(name, tier, go_live_date, account_manager, tech_lead, template
                 "notes": "",
                 "start_date": start_date_str,
                 "end_date": end_date_str,
+                "start_offset_days": it.get("start_offset_days"),
+                "end_offset_days": it.get("end_offset_days"),
             })
 
     return {
@@ -368,6 +370,8 @@ def sync_template_categories(client, template):
                     "notes": "",
                     "start_date": start_str,
                     "end_date": end_str,
+                    "start_offset_days": it.get("start_offset_days"),
+                    "end_offset_days": it.get("end_offset_days"),
                 })
             added_categories.append(cat)
         else:
@@ -391,6 +395,8 @@ def sync_template_categories(client, template):
                         "notes": "",
                         "start_date": start_str,
                         "end_date": end_str,
+                        "start_offset_days": it.get("start_offset_days"),
+                        "end_offset_days": it.get("end_offset_days"),
                     })
                     added_items.append(f"{cat} › {it['item']}")
 
@@ -1807,6 +1813,15 @@ with st.expander("📝 **Client Info**", expanded=False):
     new_val = st.date_input("Go-Live Date", value=default_date, key="edit_date")
     if str(new_val) != go_live:
         active["go_live_date"] = str(new_val) if new_val else ""
+        # Recalculate checklist item dates using stored offsets
+        if new_val:
+            for cat_items in active.get("checklist", {}).values():
+                for it in cat_items:
+                    s_off = it.get("start_offset_days")
+                    e_off = it.get("end_offset_days")
+                    if s_off is not None and e_off is not None:
+                        it["start_date"] = str(new_val - timedelta(days=s_off))
+                        it["end_date"] = str(new_val - timedelta(days=e_off))
         save_client(active)
 
     # ── Role Assignments for this client ──
