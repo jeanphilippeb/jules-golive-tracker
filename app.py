@@ -129,6 +129,16 @@ st.markdown("""
     /* Dividers */
     hr { border-color: #1a1a1a !important; }
 
+    /* Sidebar input contrast */
+    section[data-testid="stSidebar"] input,
+    section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+    section[data-testid="stSidebar"] [data-baseweb="input"] > div,
+    section[data-testid="stSidebar"] [data-testid="stDateInput"] input {
+        background-color: #1e1e1e !important;
+        border: 1px solid #3a3a3a !important;
+        color: #ffffff !important;
+    }
+
     div[data-testid="stVerticalBlock"] > div:has(> .category-header) {
         margin-bottom: 0 !important;
     }
