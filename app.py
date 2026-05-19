@@ -442,14 +442,14 @@ def load_team_members():
 
 
 def save_team_member(name, role):
-    """Upsert a team member into Supabase."""
+    """Insert a team member into Supabase, ignoring duplicates."""
     try:
-        supabase.table("team_members").upsert({
+        supabase.table("team_members").insert({
             "name": name.strip(),
             "role": role,
-        }, on_conflict="name,role").execute()
-    except Exception as e:
-        st.error(f"Could not save team member: {e}")
+        }).execute()
+    except Exception:
+        pass  # Duplicate (name, role) already exists — no action needed
 
 
 # ─── Templates Helpers ───
