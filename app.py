@@ -2214,31 +2214,13 @@ with tab_checklist:
 
                 data_changed = True
 
-    # Bulk actions (Apply / Delete selected) auto-save immediately
-    if any_bulk_action:
+    # Auto-save all changes immediately (bulk or inline)
+    if data_changed or any_bulk_action:
         with st.spinner("Saving…"):
             save_client(active)
             refresh_clients()
         st.session_state[unsaved_key] = False
-        st.toast("Saved!", icon="✅")
         st.rerun()
-
-    # Inline edits accumulate in memory — show Save button
-    if data_changed:
-        st.session_state[unsaved_key] = True
-
-    if st.session_state.get(unsaved_key):
-        save_col1, save_col2 = st.columns([5, 1])
-        with save_col1:
-            st.info("You have unsaved changes in the checklist.")
-        with save_col2:
-            if st.button("💾 Save", type="primary", key="checklist_save_btn", use_container_width=True):
-                with st.spinner("Saving…"):
-                    save_client(active)
-                    refresh_clients()
-                st.session_state[unsaved_key] = False
-                st.toast("Saved!", icon="✅")
-                st.rerun()
 
 with tab_ext:
     st.markdown("### 📅 Timeline (External)")
