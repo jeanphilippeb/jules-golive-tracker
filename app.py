@@ -1776,13 +1776,15 @@ if st.session_state.get("confirm_delete"):
 
 # ── Client Info ──
 with st.expander("📝 **Client Info**", expanded=False):
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    tier_col, _ = st.columns([1, 3])
+    with tier_col:
         new_val = st.selectbox("Tier", TIERS, index=TIERS.index(active.get("tier", "Tier 1")), key="edit_tier")
         if new_val != active.get("tier"):
             active["tier"] = new_val
             save_client(active)
-    with col2:
+
+    kickoff_col, _ = st.columns([1, 3])
+    with kickoff_col:
         kickoff = active.get("kickoff_date", "")
         try:
             default_kickoff = date.fromisoformat(kickoff) if kickoff else None
@@ -1792,7 +1794,9 @@ with st.expander("📝 **Client Info**", expanded=False):
         if str(new_kickoff_val) != kickoff:
             active["kickoff_date"] = str(new_kickoff_val) if new_kickoff_val else ""
             save_client(active)
-    with col3:
+
+    golive_col, _ = st.columns([1, 3])
+    with golive_col:
         go_live = active.get("go_live_date", "")
         try:
             default_date = date.fromisoformat(go_live) if go_live else None
