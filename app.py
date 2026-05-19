@@ -1816,18 +1816,29 @@ with st.expander("📝 **Client Info**", expanded=False):
             label = ROLE_LABELS[role]
             members = st.session_state.team_members.get(role, [])
             current_val = client_roles.get(role, "")
-            # Build options: ensure current value is included
             opts = ["(none)"] + members
             if current_val and current_val not in members:
                 opts.append(current_val)
+            opts.append("-- Add new --")
             current_idx = opts.index(current_val) if current_val in opts else 0
             new_role_val = st.selectbox(label, opts, index=current_idx, key=f"edit_role_{role}")
-            resolved = "" if new_role_val == "(none)" else new_role_val
-            if resolved != client_roles.get(role, ""):
-                if "roles" not in active:
-                    active["roles"] = {}
-                active["roles"][role] = resolved
-                save_client(active)
+            if new_role_val == "-- Add new --":
+                new_name = st.text_input("Name", key=f"new_team_{role}", placeholder=f"New {label} name", label_visibility="collapsed")
+                if st.button("Add", key=f"add_team_{role}", use_container_width=True) and new_name.strip():
+                    save_team_member(new_name.strip(), role)
+                    refresh_team()
+                    if "roles" not in active:
+                        active["roles"] = {}
+                    active["roles"][role] = new_name.strip()
+                    save_client(active)
+                    st.rerun()
+            else:
+                resolved = "" if new_role_val == "(none)" else new_role_val
+                if resolved != client_roles.get(role, ""):
+                    if "roles" not in active:
+                        active["roles"] = {}
+                    active["roles"][role] = resolved
+                    save_client(active)
 
     # ── Sync from template ──
     st.divider()
