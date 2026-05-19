@@ -129,6 +129,16 @@ st.markdown("""
     /* Dividers */
     hr { border-color: #1a1a1a !important; }
 
+    /* Sidebar input contrast */
+    section[data-testid="stSidebar"] input,
+    section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+    section[data-testid="stSidebar"] [data-baseweb="input"] > div,
+    section[data-testid="stSidebar"] [data-testid="stDateInput"] input {
+        background-color: #1e1e1e !important;
+        border: 1px solid #3a3a3a !important;
+        color: #ffffff !important;
+    }
+
     div[data-testid="stVerticalBlock"] > div:has(> .category-header) {
         margin-bottom: 0 !important;
     }
@@ -276,6 +286,8 @@ def create_client(name, tier, go_live_date, account_manager, tech_lead, template
                 "notes": "",
                 "start_date": start_date_str,
                 "end_date": end_date_str,
+                "start_offset_days": it.get("start_offset_days"),
+                "end_offset_days": it.get("end_offset_days"),
             })
 
     return {
@@ -358,6 +370,8 @@ def sync_template_categories(client, template):
                     "notes": "",
                     "start_date": start_str,
                     "end_date": end_str,
+                    "start_offset_days": it.get("start_offset_days"),
+                    "end_offset_days": it.get("end_offset_days"),
                 })
             added_categories.append(cat)
         else:
@@ -381,6 +395,8 @@ def sync_template_categories(client, template):
                         "notes": "",
                         "start_date": start_str,
                         "end_date": end_str,
+                        "start_offset_days": it.get("start_offset_days"),
+                        "end_offset_days": it.get("end_offset_days"),
                     })
                     added_items.append(f"{cat} › {it['item']}")
 
@@ -1253,15 +1269,9 @@ with st.sidebar:
         # ── New Client ──
         with st.expander("➕ **New Client**", expanded=False):
             new_name = st.text_input("Client name", key="new_name")
-            tier_col, _ = st.columns([1, 3])
-            with tier_col:
-                new_tier = st.selectbox("Tier", TIERS, key="new_tier")
-            kickoff_col, _ = st.columns([1, 3])
-            with kickoff_col:
-                new_kickoff = st.date_input("Kick-off date", value=None, key="new_kickoff")
-            golive_col, _ = st.columns([1, 3])
-            with golive_col:
-                new_date = st.date_input("Go-Live date", value=None, key="new_date")
+            new_tier = st.selectbox("Tier", TIERS, key="new_tier")
+            new_kickoff = st.date_input("Kick-off date", value=None, key="new_kickoff")
+            new_date = st.date_input("Go-Live date", value=None, key="new_date")
             # ── Role Assignments ──
             st.markdown("**Team Roles**")
             role_selections = {}
@@ -1313,8 +1323,10 @@ with st.sidebar:
                         # Save any new team members first
                         for member_name, member_role in new_members_to_save:
                             save_team_member(member_name, member_role)
-                        if new_members_to_save:
-                            refresh_team()
+                            if member_role not in st.session_state.team_members:
+                                st.session_state.team_members[member_role] = []
+                            if member_name not in st.session_state.team_members[member_role]:
+                                st.session_state.team_members[member_role].append(member_name)
 
                         # Resolve template
                         tpl = None
@@ -1778,36 +1790,39 @@ if st.session_state.get("confirm_delete"):
 
 # ── Client Info ──
 with st.expander("📝 **Client Info**", expanded=False):
-    tier_col, _ = st.columns([1, 3])
-    with tier_col:
-        new_val = st.selectbox("Tier", TIERS, index=TIERS.index(active.get("tier", "Tier 1")), key="edit_tier")
-        if new_val != active.get("tier"):
-            active["tier"] = new_val
-            save_client(active)
+    new_val = st.selectbox("Tier", TIERS, index=TIERS.index(active.get("tier", "Tier 1")), key="edit_tier")
+    if new_val != active.get("tier"):
+        active["tier"] = new_val
+        save_client(active)
 
-    kickoff_col, _ = st.columns([1, 3])
-    with kickoff_col:
-        kickoff = active.get("kickoff_date", "")
-        try:
-            default_kickoff = date.fromisoformat(kickoff) if kickoff else None
-        except ValueError:
-            default_kickoff = None
-        new_kickoff_val = st.date_input("Kick-off Date", value=default_kickoff, key="edit_kickoff")
-        if str(new_kickoff_val) != kickoff:
-            active["kickoff_date"] = str(new_kickoff_val) if new_kickoff_val else ""
-            save_client(active)
+    kickoff = active.get("kickoff_date", "")
+    try:
+        default_kickoff = date.fromisoformat(kickoff) if kickoff else None
+    except ValueError:
+        default_kickoff = None
+    new_kickoff_val = st.date_input("Kick-off Date", value=default_kickoff, key="edit_kickoff")
+    if str(new_kickoff_val) != kickoff:
+        active["kickoff_date"] = str(new_kickoff_val) if new_kickoff_val else ""
+        save_client(active)
 
-    golive_col, _ = st.columns([1, 3])
-    with golive_col:
-        go_live = active.get("go_live_date", "")
-        try:
-            default_date = date.fromisoformat(go_live) if go_live else None
-        except ValueError:
-            default_date = None
-        new_val = st.date_input("Go-Live Date", value=default_date, key="edit_date")
-        if str(new_val) != go_live:
-            active["go_live_date"] = str(new_val) if new_val else ""
-            save_client(active)
+    go_live = active.get("go_live_date", "")
+    try:
+        default_date = date.fromisoformat(go_live) if go_live else None
+    except ValueError:
+        default_date = None
+    new_val = st.date_input("Go-Live Date", value=default_date, key="edit_date")
+    if str(new_val) != go_live:
+        active["go_live_date"] = str(new_val) if new_val else ""
+        # Recalculate checklist item dates using stored offsets
+        if new_val:
+            for cat_items in active.get("checklist", {}).values():
+                for it in cat_items:
+                    s_off = it.get("start_offset_days")
+                    e_off = it.get("end_offset_days")
+                    if s_off is not None and e_off is not None:
+                        it["start_date"] = str(new_val - timedelta(days=s_off))
+                        it["end_date"] = str(new_val - timedelta(days=e_off))
+        save_client(active)
 
     # ── Role Assignments for this client ──
     st.markdown("**Team Roles**")
@@ -1828,7 +1843,10 @@ with st.expander("📝 **Client Info**", expanded=False):
                 new_name = st.text_input("Name", key=f"new_team_{role}", placeholder=f"New {label} name", label_visibility="collapsed")
                 if st.button("Add", key=f"add_team_{role}", use_container_width=True) and new_name.strip():
                     save_team_member(new_name.strip(), role)
-                    refresh_team()
+                    if role not in st.session_state.team_members:
+                        st.session_state.team_members[role] = []
+                    if new_name.strip() not in st.session_state.team_members[role]:
+                        st.session_state.team_members[role].append(new_name.strip())
                     if "roles" not in active:
                         active["roles"] = {}
                     active["roles"][role] = new_name.strip()
